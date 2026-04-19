@@ -1,4 +1,7 @@
 import asyncio
+import csv
+import io
+import json
 import os
 import logging
 import hashlib
@@ -6,6 +9,8 @@ import uuid
 import filetype
 import shutil
 import zipfile
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -49,6 +54,19 @@ SIGNATURE_MIME_BY_EXTENSION = {
 }
 BINARY_MIME_EXTENSIONS = set(SIGNATURE_MIME_BY_EXTENSION)
 OLE_COMPOUND_HEADER = bytes.fromhex("D0CF11E0A1B11AE1")
+
+class HtmlStructureParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.has_starttag = False
+        self.has_text = False
+
+    def handle_starttag(self, tag, attrs):
+        self.has_starttag = True
+
+    def handle_data(self, data):
+        if data.strip():
+            self.has_text = True
 
 class FileWatcher:
     def __init__(self, watch_dir: Path):
@@ -124,6 +142,19 @@ class FileWatcher:
             except UnicodeDecodeError:
                 continue
         return None
+
+    @staticmethod
+    def _read_text_document(path: Path) -> tuple[str | None, str | None]:
+        raw = path.read_bytes()
+        if b"\x00" in raw:
+            return None, None
+
+        for encoding in ("utf-8-sig", "utf-8", "cp1252"):
+            try:
+                return raw.decode(encoding), encoding
+            except UnicodeDecodeError:
+                continue
+        return None, None
 
     def _detect_signature_mime(self, path: Path, extension: str) -> tuple[str | None, str | None]:
         prefix = self._read_prefix(path)
@@ -234,6 +265,67 @@ class FileWatcher:
 
         return True, "", text_mime, text_source or ("sniffed" if sniffed_mime else "text")
 
+    def _validate_docx_structure(self, path: Path) -> tuple[bool, str]:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+                required = {"[Content_Types].xml", "_rels/.rels", "word/document.xml"}
+                if not required.issubset(names):
+                    return False, "ZIP_INVALID"
+
+                ET.fromstring(archive.read("[Content_Types].xml"))
+                document_root = ET.fromstring(archive.read("word/document.xml"))
+                if not document_root.tag.endswith("document"):
+                    return False, "STRUCTURAL_CORRUPTION"
+        except zipfile.BadZipFile:
+            return False, "ZIP_INVALID"
+        except (OSError, KeyError, ET.ParseError):
+            return False, "STRUCTURAL_CORRUPTION"
+
+        return True, ""
+
+    def _validate_odt_structure(self, path: Path) -> tuple[bool, str]:
+        try:
+            with zipfile.ZipFile(path) as archive:
+                names = set(archive.namelist())
+                if "mimetype" not in names or "content.xml" not in names:
+                    return False, "ZIP_INVALID"
+
+                mimetype = archive.read("mimetype").decode("ascii", errors="ignore")
+                if mimetype != "application/vnd.oasis.opendocument.text":
+                    return False, "STRUCTURAL_CORRUPTION"
+
+                ET.fromstring(archive.read("content.xml"))
+        except zipfile.BadZipFile:
+            return False, "ZIP_INVALID"
+        except (OSError, KeyError, ET.ParseError):
+            return False, "STRUCTURAL_CORRUPTION"
+
+        return True, ""
+
+    def _validate_csv_structure(self, text: str, extension: str) -> tuple[bool, str]:
+        delimiter = "\t" if extension == ".tsv" else ","
+        rows = [
+            row
+            for row in csv.reader(io.StringIO(text), delimiter=delimiter)
+            if any(cell.strip() for cell in row)
+        ]
+        if not rows:
+            return False, "FILE_EMPTY"
+
+        expected_width = len(rows[0])
+        if expected_width == 0 or any(len(row) != expected_width for row in rows):
+            return False, "CSV_INVALID"
+
+        return True, ""
+
+    def _validate_html_structure(self, text: str) -> tuple[bool, str]:
+        parser = HtmlStructureParser()
+        parser.feed(text)
+        if not parser.has_starttag:
+            return False, "HTML_INVALID"
+        return True, ""
+
     def _validate_file_structure(self, path: Path, extension: str) -> tuple[bool, str, dict]:
         """Lightweight structural validation."""
         if path.stat().st_size == 0:
@@ -242,21 +334,77 @@ class FileWatcher:
         if path.stat().st_size > MAX_FILE_SIZE:
             return False, "FILE_TOO_LARGE", {}
 
-        metadata = {"pages": None, "is_encrypted": False, "is_text": True}
+        metadata = {
+            "pages": None,
+            "is_encrypted": False,
+            "is_text": True,
+            "encoding": None,
+        }
 
         try:
             if extension == '.pdf':
-                reader = PdfReader(path)
-                metadata["pages"] = len(reader.pages)
-                metadata["is_encrypted"] = reader.is_encrypted
-                metadata["is_text"] = False
-                if reader.is_encrypted:
-                    return False, "ENCRYPTED_PDF", metadata
+                if not self._read_prefix(path, 5).startswith(b"%PDF-"):
+                    return False, "CORRUPT_PDF", metadata
+                try:
+                    reader = PdfReader(path)
+                    metadata["pages"] = len(reader.pages)
+                    metadata["is_encrypted"] = reader.is_encrypted
+                    metadata["is_text"] = False
+                    if reader.is_encrypted:
+                        return False, "ENCRYPTED_PDF", metadata
+                except Exception:
+                    return False, "CORRUPT_PDF", metadata
 
-            # Simple text decodability check for text-like formats
-            if extension in {'.txt', '.md', '.markdown', '.json', '.csv', '.tsv', '.html', '.htm'}:
-                with open(path, 'r', encoding='utf-8') as f:
-                    f.read(1024) # Try reading first 1KB
+            elif extension == ".docx":
+                metadata["is_text"] = False
+                is_valid, failure_code = self._validate_docx_structure(path)
+                if not is_valid:
+                    return False, failure_code, metadata
+
+            elif extension == ".odt":
+                metadata["is_text"] = False
+                is_valid, failure_code = self._validate_odt_structure(path)
+                if not is_valid:
+                    return False, failure_code, metadata
+
+            elif extension == ".doc":
+                metadata["is_text"] = False
+                if not self._read_prefix(path, len(OLE_COMPOUND_HEADER)).startswith(OLE_COMPOUND_HEADER):
+                    return False, "STRUCTURAL_CORRUPTION", metadata
+
+            elif extension == ".rtf":
+                text, encoding = self._read_text_document(path)
+                if text is None:
+                    return False, "TEXT_DECODE_FAILED", metadata
+                metadata["encoding"] = encoding
+                if not text.strip():
+                    return False, "FILE_EMPTY", metadata
+                if not text.lstrip().startswith("{\\rtf") or "}" not in text:
+                    return False, "STRUCTURAL_CORRUPTION", metadata
+
+            elif extension in {'.txt', '.md', '.markdown', '.json', '.csv', '.tsv', '.html', '.htm'}:
+                text, encoding = self._read_text_document(path)
+                if text is None:
+                    return False, "TEXT_DECODE_FAILED", metadata
+                metadata["encoding"] = encoding
+                if not text.strip():
+                    return False, "FILE_EMPTY", metadata
+
+                if extension == ".json":
+                    try:
+                        json.loads(text)
+                    except json.JSONDecodeError:
+                        return False, "JSON_INVALID", metadata
+
+                if extension in {".csv", ".tsv"}:
+                    is_valid, failure_code = self._validate_csv_structure(text, extension)
+                    if not is_valid:
+                        return False, failure_code, metadata
+
+                if extension in HTML_EXTENSIONS:
+                    is_valid, failure_code = self._validate_html_structure(text)
+                    if not is_valid:
+                        return False, failure_code, metadata
         except Exception as e:
             logger.warning(f"Structural validation failed for {path.name}: {e}")
             return False, "STRUCTURAL_CORRUPTION", metadata
