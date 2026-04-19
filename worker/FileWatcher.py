@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 from watchfiles import awatch, Change
 from sqlalchemy.orm import Session
 from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from pypdf import PdfReader
 
 # Local imports
@@ -37,6 +38,26 @@ MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 50 * 1024 * 1024)) # Default 50MB
 ADMISSION_VERSION = "1.0"
 STABILITY_CHECKS = int(os.getenv("FILE_STABILITY_CHECKS", "3"))
 STABILITY_INTERVAL_SECONDS = float(os.getenv("FILE_STABILITY_INTERVAL_SECONDS", "1.0"))
+
+FAILURE_MESSAGES = {
+    "UNSUPPORTED_EXTENSION": "File extension is not supported for admission.",
+    "MIME_MISMATCH": "Detected file content does not match the uploaded extension.",
+    "FILE_EMPTY": "File is empty or contains no meaningful content.",
+    "FILE_NOT_STABLE": "File was still changing when admission attempted to process it.",
+    "CORRUPT_PDF": "PDF structure could not be parsed.",
+    "ENCRYPTED_PDF": "Encrypted PDF files are not accepted by admission.",
+    "ZIP_INVALID": "ZIP-based document structure is invalid or incomplete.",
+    "HASH_COMPUTE_FAILED": "Binary hash could not be computed.",
+    "DB_WRITE_FAILED": "Admission metadata could not be written to the database.",
+    "DUPLICATE_BINARY": "An identical binary file has already been admitted.",
+    "FILE_TOO_LARGE": "File exceeds the configured admission size limit.",
+    "STRUCTURAL_CORRUPTION": "File structure failed lightweight validation.",
+    "TEXT_DECODE_FAILED": "Text file could not be decoded safely.",
+    "JSON_INVALID": "JSON document is not syntactically valid.",
+    "CSV_INVALID": "CSV or TSV document has inconsistent row structure.",
+    "HTML_INVALID": "HTML document does not contain valid HTML structure.",
+    "INTERNAL_ERROR": "Admission failed because of an internal worker error.",
+}
 
 SUPPORTED_EXTENSIONS = {
     '.txt', '.pdf', '.doc', '.docx', '.md', '.markdown',
@@ -411,27 +432,183 @@ class FileWatcher:
 
         return True, "", metadata
 
-    async def quarantine_file(self, path: Path, reason: str, upload_id: uuid.UUID):
+    def _failure_values(
+        self,
+        status: str,
+        failure_code: str,
+        failure_stage: str,
+        failure_message: str | None = None,
+        processed: bool = False,
+        **extra_values,
+    ) -> dict:
+        values = {
+            "Status": status,
+            "FailureCode": failure_code,
+            "FailureMessage": failure_message or FAILURE_MESSAGES.get(failure_code, failure_code),
+            "FailureStage": failure_stage,
+            "LastAttemptAt": datetime.utcnow(),
+        }
+        if processed:
+            values["ProcessedDate"] = datetime.utcnow()
+        values.update(extra_values)
+        return values
+
+    def _transition_upload_status(
+        self,
+        db: Session,
+        upload_id: uuid.UUID,
+        expected_statuses: set[str],
+        new_status: str,
+        **extra_values,
+    ) -> bool:
+        values = {
+            "Status": new_status,
+            "LastAttemptAt": datetime.utcnow(),
+        }
+        values.update(extra_values)
+
+        result = db.execute(
+            update(Upload)
+            .where(Upload.UploadId == upload_id)
+            .where(Upload.Status.in_(expected_statuses))
+            .values(**values)
+        )
+        return result.rowcount == 1
+
+    def _mark_upload_failure(
+        self,
+        db: Session,
+        upload_id: uuid.UUID,
+        expected_statuses: set[str],
+        status: str,
+        failure_code: str,
+        failure_stage: str,
+        failure_message: str | None = None,
+        processed: bool = True,
+        **extra_values,
+    ) -> bool:
+        values = self._failure_values(
+            status=status,
+            failure_code=failure_code,
+            failure_stage=failure_stage,
+            failure_message=failure_message,
+            processed=processed,
+            **extra_values,
+        )
+        result = db.execute(
+            update(Upload)
+            .where(Upload.UploadId == upload_id)
+            .where(Upload.Status.in_(expected_statuses))
+            .values(**values)
+        )
+        return result.rowcount == 1
+
+    def _ensure_ingestion_job(self, db: Session, binary_hash: str) -> bool:
+        existing_job = db.query(FileIngestion).filter(FileIngestion.BinaryHash == binary_hash).first()
+        if existing_job:
+            return False
+
+        db.add(
+            FileIngestion(
+                BinaryHash=binary_hash,
+                Status="Pending",
+                Stage="AdmissionComplete",
+            )
+        )
+        db.flush()
+        return True
+
+    def _ensure_metadata_and_job(
+        self,
+        db: Session,
+        upload_id: uuid.UUID,
+        binary_hash: str,
+        extension: str,
+        detected_mime: str,
+        mime_source: str,
+        file_size: int,
+        meta_hints: dict,
+    ) -> bool:
+        existing_metadata = db.query(FileMetadata).filter(FileMetadata.BinaryHash == binary_hash).first()
+        if existing_metadata:
+            try:
+                self._ensure_ingestion_job(db, binary_hash)
+            except IntegrityError:
+                db.rollback()
+            return False
+
+        try:
+            db.add(
+                FileMetadata(
+                    BinaryHash=binary_hash,
+                    Extension=extension,
+                    DetectedMimeType=detected_mime,
+                    OriginalMimeTypeSource=mime_source,
+                    FileSize=file_size,
+                    IsEncrypted=meta_hints.get("is_encrypted", False),
+                    IsTextBased=meta_hints.get("is_text", True),
+                    PageCount=meta_hints.get("pages"),
+                    FirstUploadId=upload_id,
+                    CreatedByAdmissionVersion=ADMISSION_VERSION,
+                )
+            )
+            db.flush()
+            self._ensure_ingestion_job(db, binary_hash)
+            return True
+        except IntegrityError:
+            db.rollback()
+            existing_metadata = db.query(FileMetadata).filter(FileMetadata.BinaryHash == binary_hash).first()
+            if existing_metadata:
+                try:
+                    self._ensure_ingestion_job(db, binary_hash)
+                except IntegrityError:
+                    db.rollback()
+                return False
+            raise
+
+    async def quarantine_file(
+        self,
+        db: Session,
+        path: Path,
+        reason: str,
+        upload_id: uuid.UUID,
+        failure_stage: str,
+        failure_message: str | None = None,
+        detected_mime: str | None = None,
+        extension: str | None = None,
+    ):
         """Moves file to quarantine and updates DB."""
         dest = self.quarantine_dir / f"{reason}_{path.name}"
         try:
-            shutil.move(str(path), str(dest))
-            db = SessionLocal()
-            db.execute(
-                update(Upload)
-                .where(Upload.UploadId == upload_id)
-                .values(
-                    Status="Rejected",
-                    FailureCode=reason,
-                    QuarantinePath=str(dest),
-                    ProcessedDate=datetime.utcnow()
-                )
+            await asyncio.to_thread(shutil.move, str(path), str(dest))
+            self._mark_upload_failure(
+                db,
+                upload_id,
+                expected_statuses={"Validating"},
+                status="Rejected",
+                failure_code=reason,
+                failure_stage=failure_stage,
+                failure_message=failure_message,
+                QuarantinePath=str(dest),
+                DetectedMimeType=detected_mime,
+                Extension=extension,
             )
             db.commit()
-            db.close()
             logger.info(f"File {path.name} quarantined: {reason}")
         except Exception as e:
+            db.rollback()
             logger.error(f"Failed to quarantine {path.name}: {e}")
+            self._mark_upload_failure(
+                db,
+                upload_id,
+                expected_statuses={"Validating"},
+                status="AdmissionError",
+                failure_code="INTERNAL_ERROR",
+                failure_stage="Quarantine",
+                failure_message=str(e),
+                processed=False,
+            )
+            db.commit()
 
     async def process_file(self, file_path: str):
         path = Path(file_path)
@@ -456,29 +633,48 @@ class FileWatcher:
 
         db: Session = SessionLocal()
         try:
-            upload = db.query(Upload).filter(Upload.UploadId == upload_id).first()
-            if not upload:
+            upload_exists = db.query(Upload).filter(Upload.UploadId == upload_id).first()
+            if not upload_exists:
                 logger.info(f"Deferring {filename}: upload row is not visible yet")
                 return
 
-            if upload.Status not in {"Pending", "Stabilizing"}:
-                logger.info(f"Skipping {filename}: upload is already {upload.Status}")
+            if not self._transition_upload_status(
+                db,
+                upload_id,
+                expected_statuses={"Pending"},
+                new_status="Stabilizing",
+            ):
+                db.rollback()
+                current_upload = db.query(Upload).filter(Upload.UploadId == upload_id).first()
+                current_status = current_upload.Status if current_upload else "missing"
+                logger.info(f"Skipping {filename}: upload is already {current_status}")
                 return
-
-            upload.Status = "Stabilizing"
-            upload.LastAttemptAt = datetime.utcnow()
             db.commit()
 
             if not await self.wait_for_stable_file(path):
-                upload.Status = "Pending"
-                upload.LastAttemptAt = datetime.utcnow()
+                self._mark_upload_failure(
+                    db,
+                    upload_id,
+                    expected_statuses={"Stabilizing"},
+                    status="Pending",
+                    failure_code="FILE_NOT_STABLE",
+                    failure_stage="Stabilizing",
+                    processed=False,
+                )
                 db.commit()
                 logger.info(f"Deferring {path.name}: file is not stable yet")
                 return
 
             # 2. State Transition: Stabilizing -> Validating
-            upload.Status = "Validating"
-            upload.LastAttemptAt = datetime.utcnow()
+            if not self._transition_upload_status(
+                db,
+                upload_id,
+                expected_statuses={"Stabilizing"},
+                new_status="Validating",
+            ):
+                db.rollback()
+                logger.info(f"Skipping {filename}: could not transition to Validating")
+                return
             db.commit()
 
             # 3. Content-based MIME detection
@@ -487,7 +683,14 @@ class FileWatcher:
 
             # 4. Whitelist & Extension Match
             if extension not in SUPPORTED_EXTENSIONS:
-                await self.quarantine_file(path, "UNSUPPORTED_EXTENSION", upload_id)
+                await self.quarantine_file(
+                    db,
+                    path,
+                    "UNSUPPORTED_EXTENSION",
+                    upload_id,
+                    failure_stage="ExtensionValidation",
+                    extension=extension,
+                )
                 return
 
             is_mime_valid, mime_fail_code, detected_mime, mime_source = await self.validate_extension_mime(
@@ -496,58 +699,111 @@ class FileWatcher:
                 sniffed_mime,
             )
             if not is_mime_valid:
-                await self.quarantine_file(path, mime_fail_code, upload_id)
+                await self.quarantine_file(
+                    db,
+                    path,
+                    mime_fail_code,
+                    upload_id,
+                    failure_stage="ContentTypeValidation",
+                    detected_mime=detected_mime,
+                    extension=extension,
+                )
                 return
 
             # 5. Structural Validation
             is_valid, fail_code, meta_hints = await asyncio.to_thread(self._validate_file_structure, path, extension)
             if not is_valid:
-                await self.quarantine_file(path, fail_code, upload_id)
+                await self.quarantine_file(
+                    db,
+                    path,
+                    fail_code,
+                    upload_id,
+                    failure_stage="StructuralValidation",
+                    detected_mime=detected_mime,
+                    extension=extension,
+                )
                 return
 
             # 6. Binary Hashing (Non-blocking)
-            binary_hash = await asyncio.to_thread(self._get_binary_hash, path)
+            try:
+                binary_hash = await asyncio.to_thread(self._get_binary_hash, path)
+            except Exception as hash_error:
+                self._mark_upload_failure(
+                    db,
+                    upload_id,
+                    expected_statuses={"Validating"},
+                    status="AdmissionError",
+                    failure_code="HASH_COMPUTE_FAILED",
+                    failure_stage="Hashing",
+                    failure_message=str(hash_error),
+                    DetectedMimeType=detected_mime,
+                    Extension=extension,
+                    processed=False,
+                )
+                db.commit()
+                return
 
             # 7. Deduplication Logic
-            existing_metadata = db.query(FileMetadata).filter(FileMetadata.BinaryHash == binary_hash).first()
+            file_size = path.stat().st_size
+            try:
+                created_metadata = self._ensure_metadata_and_job(
+                    db,
+                    upload_id,
+                    binary_hash,
+                    extension,
+                    detected_mime,
+                    mime_source,
+                    file_size,
+                    meta_hints,
+                )
+            except IntegrityError as db_error:
+                db.rollback()
+                self._mark_upload_failure(
+                    db,
+                    upload_id,
+                    expected_statuses={"Validating"},
+                    status="AdmissionError",
+                    failure_code="DB_WRITE_FAILED",
+                    failure_stage="DatabaseWrite",
+                    failure_message=str(db_error),
+                    DetectedMimeType=detected_mime,
+                    Extension=extension,
+                    processed=False,
+                )
+                db.commit()
+                return
 
-            if existing_metadata:
+            if not created_metadata:
                 logger.info(f"Binary duplicate: {filename}")
-                db.execute(
-                    update(Upload)
-                    .where(Upload.UploadId == upload_id)
-                    .values(Status="DuplicateBinary", BinaryHash=binary_hash, ProcessedDate=datetime.utcnow())
+                self._mark_upload_failure(
+                    db,
+                    upload_id,
+                    expected_statuses={"Validating"},
+                    status="DuplicateBinary",
+                    failure_code="DUPLICATE_BINARY",
+                    failure_stage="Deduplication",
+                    BinaryHash=binary_hash,
+                    DetectedMimeType=detected_mime,
+                    Extension=extension,
                 )
             else:
-                # 8. Create Canonical Metadata
-                new_metadata = FileMetadata(
-                    BinaryHash=binary_hash,
-                    Extension=extension,
-                    DetectedMimeType=detected_mime,
-                    OriginalMimeTypeSource=mime_source,
-                    FileSize=path.stat().st_size,
-                    IsEncrypted=meta_hints.get("is_encrypted", False),
-                    IsTextBased=meta_hints.get("is_text", True),
-                    PageCount=meta_hints.get("pages"),
-                    FirstUploadId=upload_id,
-                    CreatedByAdmissionVersion=ADMISSION_VERSION
-                )
-                db.add(new_metadata)
-                db.flush()
-
-                # 9. Enqueue Preprocessing
-                new_ingestion = FileIngestion(
-                    BinaryHash=binary_hash,
-                    Status="Pending",
-                    Stage="AdmissionComplete"
-                )
-                db.add(new_ingestion)
-                
-                db.execute(
+                accept_result = db.execute(
                     update(Upload)
                     .where(Upload.UploadId == upload_id)
+                    .where(Upload.Status == "Validating")
                     .values(Status="Accepted", BinaryHash=binary_hash, ProcessedDate=datetime.utcnow())
+                    .values(
+                        DetectedMimeType=detected_mime,
+                        Extension=extension,
+                        FailureCode=None,
+                        FailureMessage=None,
+                        FailureStage=None,
+                    )
                 )
+                if accept_result.rowcount != 1:
+                    db.rollback()
+                    logger.info(f"Skipping {filename}: upload left Validating before accept")
+                    return
             
             db.commit()
             logger.info(f"Successfully admitted {filename}")
@@ -555,10 +811,15 @@ class FileWatcher:
         except Exception as e:
             logger.exception(f"Error admitting {filename}: {e}")
             db.rollback()
-            db.execute(
-                update(Upload)
-                .where(Upload.UploadId == upload_id)
-                .values(Status="AdmissionError", FailureCode="INTERNAL_ERROR", FailureMessage=str(e))
+            self._mark_upload_failure(
+                db,
+                upload_id,
+                expected_statuses={"Pending", "Stabilizing", "Validating"},
+                status="AdmissionError",
+                failure_code="INTERNAL_ERROR",
+                failure_stage="Admission",
+                failure_message=str(e),
+                processed=False,
             )
             db.commit()
         finally:

@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, DateTime, ForeignKey, CHAR, Text, Integer
+from sqlalchemy import Column, String, DateTime, ForeignKey, CHAR, Text, Integer, Index, UniqueConstraint
 from sqlalchemy.dialects.mssql import UNIQUEIDENTIFIER
 from sqlalchemy.sql import func
 from backend.src.core.database import Base
@@ -27,3 +27,9 @@ class FileIngestion(Base):
     StartTime = Column(DateTime)
     EndTime = Column(DateTime)
     CreatedAt = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("BinaryHash", name="UQ_FileIngestions_BinaryHash"),
+        Index("IX_FileIngestions_Status", "Status"),
+        Index("IX_FileIngestions_Stage", "Stage"),
+    )

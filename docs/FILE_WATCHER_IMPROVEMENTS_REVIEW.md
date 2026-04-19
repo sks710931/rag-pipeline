@@ -15,6 +15,7 @@ Reviewed areas:
 - `tests/test_file_stability.py`
 - `tests/test_mime_validation.py`
 - `tests/test_structural_validation.py`
+- `tests/test_admission_error_and_idempotency.py`
 - `docs/ARCHITECTURE.md`
 - `docs/SUPPORTED_FILES.md`
 
@@ -24,40 +25,20 @@ The file watcher has been significantly hardened compared with the "current stat
 
 Overall status:
 
-- Implemented: 6 items
-- Partially implemented: 10 items
-- Not implemented: 3 items
+- Implemented: 8 items
+- Partially implemented: 9 items
+- Not implemented: 2 items
 
 The most important remaining risks are:
 
-1. Concurrent workers can still race when creating metadata and ingestion jobs because the dedupe path is check-then-insert and `file_ingestions.BinaryHash` is not unique.
-2. Retry/dead-letter behavior is not implemented beyond a startup reset of some statuses.
-3. The ingestion controller still references old model fields (`ContentHash`, `MimeType`) that no longer exist.
-4. Automated coverage now exists for file stability, MIME rules, and structural validators, but duplicate races, recovery, and throughput scenarios are still mostly untested.
+1. Retry/dead-letter behavior is not implemented beyond a startup reset of some statuses.
+2. The ingestion controller still references old model fields (`ContentHash`, `MimeType`) that no longer exist.
+3. Automated coverage now exists for file stability, MIME rules, structural validators, and admission state/idempotency helpers, but restart recovery and throughput scenarios are still mostly untested.
+4. Blocking DB operations still run in the async watcher path, so high-volume admission responsiveness has not been proven.
 
 ## High-Risk Findings
 
-### 1. Concurrent metadata/job creation is not fully race-safe
-
-Status: Not fully implemented
-
-Evidence:
-
-- `worker/FileWatcher.py` now skips uploads that are no longer `Pending` or `Stabilizing`, which prevents repeated events from changing an already accepted upload into `DuplicateBinary`.
-- The remaining dedupe path still queries for `FileMetadata.BinaryHash` and then inserts if no row is found.
-- `file_metadata.BinaryHash` is a primary key, but there is no explicit retry/upsert handling around a concurrent insert collision.
-- `file_ingestions.BinaryHash` has no unique constraint, so duplicate downstream jobs remain possible under races.
-
-Impact:
-
-Two concurrent workers can still race on the same binary hash. One may create metadata and the other may fail or create duplicate downstream state unless the insert path is made explicitly idempotent.
-
-Recommended fix:
-
-- Use a transaction-safe upsert or handle the primary-key conflict as a duplicate outcome.
-- Add a unique job guard for `file_ingestions.BinaryHash` or an equivalent idempotent queue key.
-
-### 2. Ingestion API still uses removed field names
+### 1. Ingestion API still uses removed field names
 
 Status: Not implemented for compatibility
 
@@ -88,8 +69,8 @@ Recommended fix:
 | 2.4 | Quarantine instead of silent deletion | Implemented | Rejected files are moved with `shutil.move()` to `uploads/quarantine` and `FailureCode`/`QuarantinePath` are saved (`FileWatcher.py:129-147`). No hard delete was found in the watcher. |
 | 2.5 | Separate binary identity from normalized content identity | Implemented | Models and SQL use `BinaryHash` as the primary binary identity and include `ContentHashNormalized` for later normalized text identity (`file_metadata.py:9,17`; `recreate_schema.sql:36,44`). |
 | 2.6 | Expanded status model | Partial | Upload statuses now include `Pending`, `Stabilizing`, `Validating`, `Accepted`, `Rejected`, `DuplicateBinary`, and `AdmissionError`. Missing or unused recommended states include `Detected` and `QueuedForPreprocessing`. Ingestion stage fields exist but no downstream lifecycle is implemented yet. |
-| 2.7 | Error/rejection reason fields | Partial | Upload model has `FailureCode`, `FailureMessage`, `FailureStage`, `LastAttemptAt`, and `RetryCount` (`upload.py:23-33`). Watcher sets `FailureCode` for quarantine and internal errors, but usually does not set `FailureMessage` or `FailureStage`. |
-| 2.8 | Idempotent and race-safe processing | Partial | `FileMetadata.BinaryHash` is the primary key, so binary metadata uniqueness exists. Repeated events for already terminal uploads are now skipped. However the check-then-insert dedupe path is not transactionally race-safe, and ingestion jobs are not protected by a unique constraint. |
+| 2.7 | Error/rejection reason fields | Implemented | Upload model has `FailureCode`, `FailureMessage`, `FailureStage`, `LastAttemptAt`, and `RetryCount`. The watcher now uses a shared failure update helper for unsupported extensions, MIME mismatches, structural failures, unstable files, hash failures, DB write failures, duplicate binaries, quarantine failures, and internal errors. Rejected/failed/duplicate uploads receive structured code, message, stage, and attempt timestamp fields. |
+| 2.8 | Idempotent and race-safe processing | Implemented | Upload processing is now claimed with guarded `Pending -> Stabilizing -> Validating` updates, so duplicate events or multiple workers cannot blindly overwrite terminal statuses. `FileMetadata.BinaryHash` remains the canonical primary key, metadata insert `IntegrityError` collisions are resolved as duplicate-binary outcomes, and `file_ingestions.BinaryHash` is protected by `UQ_FileIngestions_BinaryHash` in ORM models and SQL schema scripts. |
 | 2.9 | Avoid blocking file I/O in async flow | Partial | Hashing, MIME sniffing, and structural validation run via `asyncio.to_thread()`. But DB calls and `shutil.move()` still run synchronously inside the async flow, and files are processed serially inside the watch event loop. |
 | 2.10 | Support more than `Change.added` | Partial | The watcher handles `Change.added` and `Change.modified` (`FileWatcher.py:299`) and ignores `.tmp` files (`153`). There is no debounce or per-path in-flight guard. |
 | 2.11 | File size and safety limits | Partial | `MAX_FILE_SIZE` exists (`FileWatcher.py:32`) and oversized/encrypted PDFs are rejected (`105-117`). Missing controls include max PDF pages, max text length, nested archive policy, and special/manual queues. |
@@ -99,13 +80,13 @@ Recommended fix:
 | 2.15 | Retry design and dead-letter behavior | Not implemented | `RetryCount` exists and startup recovery increments it, but there is no transient/permanent classification, capped retry loop, backoff, dead-letter terminal state, or retry handling for DB/file lock failures. |
 | 2.16 | Startup recovery logic | Partial | `recover_stuck_uploads()` resets `Validating` and `Stabilizing` to `Pending`. It does not check staleness age, file existence, `Processing`, `QueuedForPreprocessing`, or metadata/job mismatches. |
 | 2.17 | Logging and observability | Partial | Basic logs exist for quarantine, duplicates, admission, and loop errors. Logs are not structured and do not consistently include `UploadId`, status before/after, failure stage, duration, file size, or metrics. |
-| 3.1 | Uploads schema improvements | Partial | Required columns mostly exist. Missing: stronger status semantics enforcement and consistent population of `DetectedMimeType`, `FailureMessage`, `FailureStage`, and retry fields. |
+| 3.1 | Uploads schema improvements | Partial | Required columns mostly exist and the watcher now consistently populates `DetectedMimeType`, `Extension`, `FailureCode`, `FailureMessage`, `FailureStage`, and `LastAttemptAt` during admission outcomes. Missing: database-level status-transition constraints and full retry/dead-letter semantics. |
 | 3.2 | FileMetadata schema improvements | Partial | `BinaryHash`, `Extension`, `DetectedMimeType`, `OriginalMimeTypeSource`, `IsEncrypted`, `IsTextBased`, `PageCount`, `ContentHashNormalized`, `ParserHint`, and admission version exist. Missing: populated `ParserHint` and possibly `DocumentType`/`NeedsOcr` depending on target design. |
-| 3.3 | FileIngestion schema improvements | Partial | `Stage`, `AttemptCount`, `WorkerId`, and processing version fields exist. Missing: `QueueMessageId`/`JobId`, unique job constraint, and actual downstream processing semantics. |
+| 3.3 | FileIngestion schema improvements | Partial | `Stage`, `AttemptCount`, `WorkerId`, processing version fields, and a unique `BinaryHash` job guard now exist. Missing: `QueueMessageId`/`JobId` and actual downstream processing semantics. |
 | 4.1 | Recommended target flow | Partial | Upload API uses DB-record-first temp-to-final rename, and watcher stabilizes files before validation. The watcher validates extension plus MIME plus structure, hashes, dedupes, and creates a pending ingestion row. The missing preprocessing worker means the full target flow is not complete. |
-| 5.1 | Functional definition of done | Partial | Several functional items are present, but idempotency, failure details, retry/recovery, and logging are incomplete. |
-| 5.2 | Operational definition of done | Not implemented | Duplicate events, restart reconciliation, transient retries, and throughput behavior are not proven by code or tests. |
-| 6-7 | Mandatory test scenarios and test strategy | Not implemented | Focused unit tests now cover the file-stability handoff, MIME rule matching, and structural validators. The full mandatory test set is still missing for duplicate races, recovery, and throughput. |
+| 5.1 | Functional definition of done | Partial | Several functional items are present, including idempotent binary admission and structured failure details. Retry/recovery, richer parser routing, and logging are still incomplete. |
+| 5.2 | Operational definition of done | Partial | Duplicate event and duplicate-job protections are now present in code, but restart reconciliation, transient retries, and throughput behavior are not fully proven by integration tests. |
+| 6-7 | Mandatory test scenarios and test strategy | Not implemented | Focused unit tests now cover the file-stability handoff, MIME rule matching, structural validators, failure-field helpers, guarded state transitions, and the unique ingestion-job guard. The full mandatory integration test set is still missing for recovery and throughput. |
 
 ## Schema Review
 
@@ -115,13 +96,13 @@ Implemented schema improvements:
 - `file_metadata.BinaryHash` is the primary key.
 - `file_metadata.ContentHashNormalized` exists for later normalized content dedupe.
 - `file_ingestions.Stage`, worker fields, attempt count, and version fields exist.
+- `file_ingestions.BinaryHash` now has `UQ_FileIngestions_BinaryHash` to prevent duplicate downstream admission jobs for the same canonical binary.
 
 Schema gaps:
 
-- `file_ingestions` has no uniqueness constraint on `BinaryHash`, so duplicate jobs can be created by races.
 - `file_ingestions` does not include `QueueMessageId` or `JobId`.
 - No mapping table exists for upload-to-metadata relationships with relationship type.
-- `uploads.BinaryHash` is indexed but not constrained by status transition rules.
+- `uploads.BinaryHash` is indexed, and watcher code enforces expected-state transitions, but the database itself does not enforce the upload status state machine.
 
 ## Documentation Drift
 
@@ -139,7 +120,7 @@ Commands run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall backend worker tests
-git diff --check -- worker/FileWatcher.py tests/test_structural_validation.py docs/FILE_WATCHER_IMPROVEMENTS_REVIEW.md
+git diff --check -- worker/FileWatcher.py worker/models.py backend/src/models/file_ingestion.py sql/create_file_ingestions_table.sql sql/recreate_schema.sql tests/test_admission_error_and_idempotency.py docs/FILE_WATCHER_IMPROVEMENTS_REVIEW.md
 ```
 
 Result:
@@ -150,15 +131,15 @@ Result:
 Additional verification:
 
 - Searched source, SQL, and docs for watcher, schema, status, retry, MIME, quarantine, deletion, and old `ContentHash`/`MimeType` references.
-- Added and ran focused file-stability, MIME validation, and structural validation tests:
+- Added and ran focused file-stability, MIME validation, structural validation, and admission idempotency/failure-field tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_structural_validation tests.test_mime_validation tests.test_file_stability
+.\.venv\Scripts\python.exe -m unittest tests.test_file_stability tests.test_mime_validation tests.test_structural_validation tests.test_admission_error_and_idempotency
 ```
 
 Result:
 
-- 19 tests passed.
+- 22 tests passed.
 
 Note:
 
@@ -169,16 +150,16 @@ Note:
 Priority 1:
 
 1. Fix `backend/src/controllers/ingestion_controller.py` to use `BinaryHash` and `DetectedMimeType`.
-2. Make concurrent metadata/job creation transactionally idempotent.
+2. Add retry classification, capped attempts, and terminal dead-letter behavior.
 
 Priority 2:
 
-1. Add a unique job guard for `file_ingestions.BinaryHash` or an idempotent queue key.
-2. Populate `FailureMessage`, `FailureStage`, `DetectedMimeType`, and parser routing fields consistently.
-3. Add retry classification, capped attempts, and terminal dead-letter behavior.
+1. Add integration tests for duplicate events, concurrent workers, and metadata/job collision recovery against a real test database.
+2. Populate parser routing fields consistently.
+3. Strengthen startup recovery for stale validating/stabilizing rows, missing files, and metadata/job mismatches.
 
 Priority 3:
 
-1. Add unit tests for filename parsing, state transitions, MIME rules, structural validators, and quarantine handling.
-2. Add integration tests for duplicate events, temp-to-final rename, corrupt/fake files, startup recovery, and concurrent workers.
+1. Add remaining unit tests for filename parsing and quarantine handling.
+2. Add integration tests for temp-to-final rename, corrupt/fake files, startup recovery, and throughput.
 3. Add structured admission logs with `UploadId`, `BinaryHash`, `StatusBefore`, `StatusAfter`, `FailureCode`, and `DurationMs`.

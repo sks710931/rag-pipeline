@@ -71,7 +71,8 @@ CREATE TABLE file_ingestions (
     EndTime DATETIME2,
     CreatedAt DATETIME2 DEFAULT GETDATE(),
 
-    CONSTRAINT FK_FileIngestions_Metadata FOREIGN KEY (BinaryHash) REFERENCES file_metadata(BinaryHash)
+    CONSTRAINT FK_FileIngestions_Metadata FOREIGN KEY (BinaryHash) REFERENCES file_metadata(BinaryHash),
+    CONSTRAINT UQ_FileIngestions_BinaryHash UNIQUE (BinaryHash)
 );
 
 CREATE INDEX IX_FileIngestions_Status ON file_ingestions(Status);
