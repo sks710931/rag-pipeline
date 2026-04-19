@@ -8,6 +8,7 @@ import hashlib
 import uuid
 import filetype
 import shutil
+import time
 import zipfile
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
@@ -35,6 +36,11 @@ logger = logging.getLogger("Worker")
 load_dotenv()
 WATCH_DIR = Path(os.getenv("WATCH_DIR", "./uploads")).resolve()
 MAX_FILE_SIZE = int(os.getenv("MAX_FILE_SIZE", 50 * 1024 * 1024)) # Default 50MB
+MAX_TEXT_FILE_SIZE = int(os.getenv("MAX_TEXT_FILE_SIZE", 10 * 1024 * 1024)) # Default 10MB
+MAX_PDF_PAGES = int(os.getenv("MAX_PDF_PAGES", "1000"))
+MAX_ZIP_ENTRIES = int(os.getenv("MAX_ZIP_ENTRIES", "1000"))
+MAX_ZIP_UNCOMPRESSED_SIZE = int(os.getenv("MAX_ZIP_UNCOMPRESSED_SIZE", 200 * 1024 * 1024))
+WATCH_EVENT_DEBOUNCE_SECONDS = float(os.getenv("WATCH_EVENT_DEBOUNCE_SECONDS", "0.1"))
 ADMISSION_VERSION = "1.0"
 STABILITY_CHECKS = int(os.getenv("FILE_STABILITY_CHECKS", "3"))
 STABILITY_INTERVAL_SECONDS = float(os.getenv("FILE_STABILITY_INTERVAL_SECONDS", "1.0"))
@@ -51,6 +57,11 @@ FAILURE_MESSAGES = {
     "DB_WRITE_FAILED": "Admission metadata could not be written to the database.",
     "DUPLICATE_BINARY": "An identical binary file has already been admitted.",
     "FILE_TOO_LARGE": "File exceeds the configured admission size limit.",
+    "TEXT_TOO_LARGE": "Text-like file exceeds the configured direct text admission limit.",
+    "PDF_TOO_MANY_PAGES": "PDF exceeds the configured admission page limit.",
+    "ZIP_TOO_MANY_ENTRIES": "ZIP-based document contains too many entries.",
+    "ZIP_BOMB_RISK": "ZIP-based document exceeds the configured uncompressed size limit.",
+    "NESTED_ARCHIVE_UNSUPPORTED": "Nested archives are not supported for admission.",
     "STRUCTURAL_CORRUPTION": "File structure failed lightweight validation.",
     "TEXT_DECODE_FAILED": "Text file could not be decoded safely.",
     "JSON_INVALID": "JSON document is not syntactically valid.",
@@ -66,6 +77,10 @@ SUPPORTED_EXTENSIONS = {
 
 TEXT_EXTENSIONS = {'.txt', '.md', '.markdown', '.json', '.csv', '.tsv'}
 HTML_EXTENSIONS = {'.html', '.htm'}
+DIRECT_TEXT_EXTENSIONS = TEXT_EXTENSIONS | HTML_EXTENSIONS | {'.rtf'}
+NESTED_ARCHIVE_SUFFIXES = {
+    '.zip', '.7z', '.rar', '.tar', '.gz', '.bz2', '.xz', '.tgz', '.tbz', '.txz'
+}
 SIGNATURE_MIME_BY_EXTENSION = {
     '.pdf': 'application/pdf',
     '.doc': 'application/msword',
@@ -94,6 +109,9 @@ class FileWatcher:
         self.watch_dir = Path(watch_dir).resolve()
         self.quarantine_dir = self.watch_dir / "quarantine"
         self.is_running = False
+        self._inflight_paths: set[Path] = set()
+        self._inflight_lock = asyncio.Lock()
+        self._processing_tasks: set[asyncio.Task] = set()
         self._ensure_dirs()
 
     def _ensure_dirs(self):
@@ -133,6 +151,40 @@ class FileWatcher:
             await asyncio.sleep(interval_seconds)
             try:
                 current = await asyncio.to_thread(self._file_stability_signature, path)
+            except OSError as e:
+                logger.warning(f"Cannot re-check file state for {path.name}: {e}")
+                return False
+
+            if current != previous:
+                logger.info(
+                    f"File {path.name} is still changing "
+                    f"(previous={previous}, current={current})"
+                )
+                return False
+            previous = current
+
+        return True
+
+    def _wait_for_stable_file_sync(
+        self,
+        path: Path,
+        checks: int = STABILITY_CHECKS,
+        interval_seconds: float = STABILITY_INTERVAL_SECONDS,
+    ) -> bool:
+        """Thread-friendly version used by the blocking admission worker."""
+        if checks < 1:
+            checks = 1
+
+        try:
+            previous = self._file_stability_signature(path)
+        except OSError as e:
+            logger.warning(f"Cannot read file state for {path.name}: {e}")
+            return False
+
+        for _ in range(checks):
+            time.sleep(interval_seconds)
+            try:
+                current = self._file_stability_signature(path)
             except OSError as e:
                 logger.warning(f"Cannot re-check file state for {path.name}: {e}")
                 return False
@@ -236,7 +288,7 @@ class FileWatcher:
 
         return "text/plain", "text"
 
-    async def validate_extension_mime(
+    def validate_extension_mime_sync(
         self,
         path: Path,
         extension: str,
@@ -248,11 +300,7 @@ class FileWatcher:
             return False, "UNSUPPORTED_EXTENSION", "", ""
 
         if extension in BINARY_MIME_EXTENSIONS:
-            signature_mime, signature_source = await asyncio.to_thread(
-                self._detect_signature_mime,
-                path,
-                extension,
-            )
+            signature_mime, signature_source = self._detect_signature_mime(path, extension)
             expected_mime = SIGNATURE_MIME_BY_EXTENSION[extension]
             if signature_mime == expected_mime:
                 source = "sniffed" if sniffed_mime == expected_mime else signature_source or "signature"
@@ -261,7 +309,7 @@ class FileWatcher:
             detected_mime = sniffed_mime
             source = "sniffed" if sniffed_mime else ""
             if not detected_mime:
-                text_mime, text_source = await asyncio.to_thread(self._detect_text_mime, path, extension)
+                text_mime, text_source = self._detect_text_mime(path, extension)
                 detected_mime = text_mime or "application/octet-stream"
                 source = text_source or "unknown"
 
@@ -275,7 +323,7 @@ class FileWatcher:
         }:
             return False, "MIME_MISMATCH", sniffed_mime, "sniffed"
 
-        text_mime, text_source = await asyncio.to_thread(self._detect_text_mime, path, extension)
+        text_mime, text_source = self._detect_text_mime(path, extension)
         if not text_mime:
             return False, "MIME_MISMATCH", sniffed_mime or "application/octet-stream", (
                 "sniffed" if sniffed_mime else "unknown"
@@ -286,9 +334,43 @@ class FileWatcher:
 
         return True, "", text_mime, text_source or ("sniffed" if sniffed_mime else "text")
 
+    async def validate_extension_mime(
+        self,
+        path: Path,
+        extension: str,
+        sniffed_mime: str | None,
+    ) -> tuple[bool, str, str, str]:
+        return await asyncio.to_thread(
+            self.validate_extension_mime_sync,
+            path,
+            extension,
+            sniffed_mime,
+        )
+
+    def _validate_zip_safety(self, archive: zipfile.ZipFile) -> tuple[bool, str]:
+        infos = archive.infolist()
+        if len(infos) > MAX_ZIP_ENTRIES:
+            return False, "ZIP_TOO_MANY_ENTRIES"
+
+        total_uncompressed_size = 0
+        for info in infos:
+            total_uncompressed_size += max(info.file_size, 0)
+            if total_uncompressed_size > MAX_ZIP_UNCOMPRESSED_SIZE:
+                return False, "ZIP_BOMB_RISK"
+
+            suffix = Path(info.filename).suffix.lower()
+            if suffix in NESTED_ARCHIVE_SUFFIXES:
+                return False, "NESTED_ARCHIVE_UNSUPPORTED"
+
+        return True, ""
+
     def _validate_docx_structure(self, path: Path) -> tuple[bool, str]:
         try:
             with zipfile.ZipFile(path) as archive:
+                is_safe, failure_code = self._validate_zip_safety(archive)
+                if not is_safe:
+                    return False, failure_code
+
                 names = set(archive.namelist())
                 required = {"[Content_Types].xml", "_rels/.rels", "word/document.xml"}
                 if not required.issubset(names):
@@ -308,6 +390,10 @@ class FileWatcher:
     def _validate_odt_structure(self, path: Path) -> tuple[bool, str]:
         try:
             with zipfile.ZipFile(path) as archive:
+                is_safe, failure_code = self._validate_zip_safety(archive)
+                if not is_safe:
+                    return False, failure_code
+
                 names = set(archive.namelist())
                 if "mimetype" not in names or "content.xml" not in names:
                     return False, "ZIP_INVALID"
@@ -349,11 +435,15 @@ class FileWatcher:
 
     def _validate_file_structure(self, path: Path, extension: str) -> tuple[bool, str, dict]:
         """Lightweight structural validation."""
-        if path.stat().st_size == 0:
+        file_size = path.stat().st_size
+        if file_size == 0:
             return False, "FILE_EMPTY", {}
 
-        if path.stat().st_size > MAX_FILE_SIZE:
+        if file_size > MAX_FILE_SIZE:
             return False, "FILE_TOO_LARGE", {}
+
+        if extension in DIRECT_TEXT_EXTENSIONS and file_size > MAX_TEXT_FILE_SIZE:
+            return False, "TEXT_TOO_LARGE", {}
 
         metadata = {
             "pages": None,
@@ -373,6 +463,8 @@ class FileWatcher:
                     metadata["is_text"] = False
                     if reader.is_encrypted:
                         return False, "ENCRYPTED_PDF", metadata
+                    if MAX_PDF_PAGES > 0 and metadata["pages"] > MAX_PDF_PAGES:
+                        return False, "PDF_TOO_MANY_PAGES", metadata
                 except Exception:
                     return False, "CORRUPT_PDF", metadata
 
@@ -566,7 +658,7 @@ class FileWatcher:
                 return False
             raise
 
-    async def quarantine_file(
+    def _quarantine_file_sync(
         self,
         db: Session,
         path: Path,
@@ -580,7 +672,7 @@ class FileWatcher:
         """Moves file to quarantine and updates DB."""
         dest = self.quarantine_dir / f"{reason}_{path.name}"
         try:
-            await asyncio.to_thread(shutil.move, str(path), str(dest))
+            shutil.move(str(path), str(dest))
             self._mark_upload_failure(
                 db,
                 upload_id,
@@ -610,8 +702,65 @@ class FileWatcher:
             )
             db.commit()
 
+    async def quarantine_file(
+        self,
+        db: Session,
+        path: Path,
+        reason: str,
+        upload_id: uuid.UUID,
+        failure_stage: str,
+        failure_message: str | None = None,
+        detected_mime: str | None = None,
+        extension: str | None = None,
+    ):
+        await asyncio.to_thread(
+            self._quarantine_file_sync,
+            db,
+            path,
+            reason,
+            upload_id,
+            failure_stage,
+            failure_message,
+            detected_mime,
+            extension,
+        )
+
+    def _is_candidate_file(self, path: Path) -> bool:
+        if not path.is_file() or path.suffix == '.tmp':
+            return False
+
+        try:
+            path.relative_to(self.quarantine_dir)
+            return False
+        except ValueError:
+            return True
+
     async def process_file(self, file_path: str):
-        path = Path(file_path)
+        path = Path(file_path).resolve()
+        is_candidate = await asyncio.to_thread(self._is_candidate_file, path)
+        if not is_candidate:
+            return
+
+        async with self._inflight_lock:
+            if path in self._inflight_paths:
+                logger.info(f"Skipping {path.name}: path already has an admission task")
+                return
+            self._inflight_paths.add(path)
+
+        try:
+            if WATCH_EVENT_DEBOUNCE_SECONDS > 0:
+                await asyncio.sleep(WATCH_EVENT_DEBOUNCE_SECONDS)
+
+            is_candidate = await asyncio.to_thread(self._is_candidate_file, path)
+            if not is_candidate:
+                return
+
+            await asyncio.to_thread(self._process_file_sync, path)
+        finally:
+            async with self._inflight_lock:
+                self._inflight_paths.discard(path)
+
+    def _process_file_sync(self, path: Path):
         if not path.is_file() or path.suffix == '.tmp':
             return
 
@@ -651,7 +800,7 @@ class FileWatcher:
                 return
             db.commit()
 
-            if not await self.wait_for_stable_file(path):
+            if not self._wait_for_stable_file_sync(path):
                 self._mark_upload_failure(
                     db,
                     upload_id,
@@ -678,12 +827,12 @@ class FileWatcher:
             db.commit()
 
             # 3. Content-based MIME detection
-            kind = await asyncio.to_thread(filetype.guess, path)
+            kind = filetype.guess(path)
             sniffed_mime = kind.mime if kind else None
 
             # 4. Whitelist & Extension Match
             if extension not in SUPPORTED_EXTENSIONS:
-                await self.quarantine_file(
+                self._quarantine_file_sync(
                     db,
                     path,
                     "UNSUPPORTED_EXTENSION",
@@ -693,13 +842,13 @@ class FileWatcher:
                 )
                 return
 
-            is_mime_valid, mime_fail_code, detected_mime, mime_source = await self.validate_extension_mime(
+            is_mime_valid, mime_fail_code, detected_mime, mime_source = self.validate_extension_mime_sync(
                 path,
                 extension,
                 sniffed_mime,
             )
             if not is_mime_valid:
-                await self.quarantine_file(
+                self._quarantine_file_sync(
                     db,
                     path,
                     mime_fail_code,
@@ -711,9 +860,9 @@ class FileWatcher:
                 return
 
             # 5. Structural Validation
-            is_valid, fail_code, meta_hints = await asyncio.to_thread(self._validate_file_structure, path, extension)
+            is_valid, fail_code, meta_hints = self._validate_file_structure(path, extension)
             if not is_valid:
-                await self.quarantine_file(
+                self._quarantine_file_sync(
                     db,
                     path,
                     fail_code,
@@ -724,9 +873,9 @@ class FileWatcher:
                 )
                 return
 
-            # 6. Binary Hashing (Non-blocking)
+            # 6. Binary Hashing
             try:
-                binary_hash = await asyncio.to_thread(self._get_binary_hash, path)
+                binary_hash = self._get_binary_hash(path)
             except Exception as hash_error:
                 self._mark_upload_failure(
                     db,
@@ -825,7 +974,7 @@ class FileWatcher:
         finally:
             db.close()
 
-    async def recover_stuck_uploads(self):
+    def _recover_stuck_uploads_sync(self):
         """Startup recovery for files stuck in intermediate states."""
         db = SessionLocal()
         try:
@@ -841,6 +990,29 @@ class FileWatcher:
         finally:
             db.close()
 
+    async def recover_stuck_uploads(self):
+        await asyncio.to_thread(self._recover_stuck_uploads_sync)
+
+    def _should_process_change(self, change_type: Change) -> bool:
+        return change_type in {Change.added, Change.modified}
+
+    def _track_processing_task(self, task: asyncio.Task):
+        self._processing_tasks.add(task)
+        task.add_done_callback(self._processing_tasks.discard)
+
+    async def handle_watch_changes(self, changes):
+        for change_type, file_path in changes:
+            if self._should_process_change(change_type):
+                task = asyncio.create_task(self.process_file(file_path))
+                self._track_processing_task(task)
+
+    async def wait_for_processing_tasks(self):
+        if not self._processing_tasks:
+            return
+
+        tasks = list(self._processing_tasks)
+        await asyncio.gather(*tasks, return_exceptions=True)
+
     async def start(self):
         await self.recover_stuck_uploads()
         self.is_running = True
@@ -849,16 +1021,15 @@ class FileWatcher:
         while self.is_running:
             try:
                 async for changes in awatch(self.watch_dir):
-                    for change_type, file_path in changes:
-                        # React to added or renamed files (atomic move)
-                        if change_type in {Change.added, Change.modified}:
-                            await self.process_file(file_path)
+                    await self.handle_watch_changes(changes)
             except Exception as e:
                 logger.error(f"Watcher loop error: {e}. Restarting in 5s...")
                 await asyncio.sleep(5)
 
     def stop(self):
         self.is_running = False
+        for task in list(self._processing_tasks):
+            task.cancel()
 
 if __name__ == "__main__":
     watcher = FileWatcher(WATCH_DIR)

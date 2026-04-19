@@ -16,6 +16,7 @@ Reviewed areas:
 - `tests/test_mime_validation.py`
 - `tests/test_structural_validation.py`
 - `tests/test_admission_error_and_idempotency.py`
+- `tests/test_watcher_async_flow_and_safety.py`
 - `docs/ARCHITECTURE.md`
 - `docs/SUPPORTED_FILES.md`
 
@@ -25,16 +26,16 @@ The file watcher has been significantly hardened compared with the "current stat
 
 Overall status:
 
-- Implemented: 8 items
-- Partially implemented: 9 items
+- Implemented: 11 items
+- Partially implemented: 6 items
 - Not implemented: 2 items
 
 The most important remaining risks are:
 
 1. Retry/dead-letter behavior is not implemented beyond a startup reset of some statuses.
 2. The ingestion controller still references old model fields (`ContentHash`, `MimeType`) that no longer exist.
-3. Automated coverage now exists for file stability, MIME rules, structural validators, and admission state/idempotency helpers, but restart recovery and throughput scenarios are still mostly untested.
-4. Blocking DB operations still run in the async watcher path, so high-volume admission responsiveness has not been proven.
+3. Automated coverage now exists for file stability, MIME rules, structural validators, admission idempotency, async event scheduling, and safety limits, but restart recovery and end-to-end throughput scenarios are still mostly untested.
+4. Parser routing, startup reconciliation, retry/dead-letter behavior, and structured observability remain incomplete.
 
 ## High-Risk Findings
 
@@ -71,9 +72,9 @@ Recommended fix:
 | 2.6 | Expanded status model | Partial | Upload statuses now include `Pending`, `Stabilizing`, `Validating`, `Accepted`, `Rejected`, `DuplicateBinary`, and `AdmissionError`. Missing or unused recommended states include `Detected` and `QueuedForPreprocessing`. Ingestion stage fields exist but no downstream lifecycle is implemented yet. |
 | 2.7 | Error/rejection reason fields | Implemented | Upload model has `FailureCode`, `FailureMessage`, `FailureStage`, `LastAttemptAt`, and `RetryCount`. The watcher now uses a shared failure update helper for unsupported extensions, MIME mismatches, structural failures, unstable files, hash failures, DB write failures, duplicate binaries, quarantine failures, and internal errors. Rejected/failed/duplicate uploads receive structured code, message, stage, and attempt timestamp fields. |
 | 2.8 | Idempotent and race-safe processing | Implemented | Upload processing is now claimed with guarded `Pending -> Stabilizing -> Validating` updates, so duplicate events or multiple workers cannot blindly overwrite terminal statuses. `FileMetadata.BinaryHash` remains the canonical primary key, metadata insert `IntegrityError` collisions are resolved as duplicate-binary outcomes, and `file_ingestions.BinaryHash` is protected by `UQ_FileIngestions_BinaryHash` in ORM models and SQL schema scripts. |
-| 2.9 | Avoid blocking file I/O in async flow | Partial | Hashing, MIME sniffing, and structural validation run via `asyncio.to_thread()`. But DB calls and `shutil.move()` still run synchronously inside the async flow, and files are processed serially inside the watch event loop. |
-| 2.10 | Support more than `Change.added` | Partial | The watcher handles `Change.added` and `Change.modified` (`FileWatcher.py:299`) and ignores `.tmp` files (`153`). There is no debounce or per-path in-flight guard. |
-| 2.11 | File size and safety limits | Partial | `MAX_FILE_SIZE` exists (`FileWatcher.py:32`) and oversized/encrypted PDFs are rejected (`105-117`). Missing controls include max PDF pages, max text length, nested archive policy, and special/manual queues. |
+| 2.9 | Avoid blocking file I/O in async flow | Implemented | The async watcher now acts as a coordinator: candidate checks run in `asyncio.to_thread()`, the full DB/file admission path runs in `_process_file_sync()` through `asyncio.to_thread()`, startup recovery is offloaded to a worker thread, and watch events create independent admission tasks instead of serially awaiting each file in the watch loop. Blocking hash, MIME, structural validation, quarantine moves, DB writes, and file stats now happen outside the event loop. |
+| 2.10 | Support more than `Change.added` | Implemented | The watcher handles both `Change.added` and `Change.modified`, schedules each eligible event through `handle_watch_changes()`, ignores temp/quarantine paths, and uses a per-path `_inflight_paths` guard plus configurable debounce to coalesce duplicate events while a file is already being admitted. Focused tests cover added/modified scheduling and same-path duplicate event coalescing. |
+| 2.11 | File size and safety limits | Implemented | Admission now enforces `MAX_FILE_SIZE`, `MAX_TEXT_FILE_SIZE`, `MAX_PDF_PAGES`, encrypted PDF rejection, ZIP entry count limits, ZIP total uncompressed size limits, and nested archive rejection for ZIP-based document formats. Focused tests cover oversized direct text, over-page-limit PDFs, and nested archive rejection inside DOCX. |
 | 2.12 | Canonical parser routing metadata | Partial | `Extension`, `DetectedMimeType`, `OriginalMimeTypeSource`, `ParserHint`, and admission version fields exist. `ParserHint` is not populated, and there is no `DocumentType`, `Encoding`, or `NeedsOcr` field. |
 | 2.13 | Version admission/preprocessing/chunking/embedding logic | Partial | `AdmissionVersion` and `CreatedByAdmissionVersion` exist and are set. `PreprocessingVersion`, `ChunkingVersion`, `EmbeddingModel`, and `EmbeddingVersion` exist on ingestion rows but are not populated because downstream stages are not implemented. |
 | 2.14 | Trace all uploads to canonical metadata | Partial | `uploads.BinaryHash` links every accepted/duplicate upload to `file_metadata.BinaryHash`, satisfying the simplest option in the improvement doc. There is no relationship type (`Primary`, `DuplicateBinary`) and no separate mapping table. |
@@ -85,8 +86,8 @@ Recommended fix:
 | 3.3 | FileIngestion schema improvements | Partial | `Stage`, `AttemptCount`, `WorkerId`, processing version fields, and a unique `BinaryHash` job guard now exist. Missing: `QueueMessageId`/`JobId` and actual downstream processing semantics. |
 | 4.1 | Recommended target flow | Partial | Upload API uses DB-record-first temp-to-final rename, and watcher stabilizes files before validation. The watcher validates extension plus MIME plus structure, hashes, dedupes, and creates a pending ingestion row. The missing preprocessing worker means the full target flow is not complete. |
 | 5.1 | Functional definition of done | Partial | Several functional items are present, including idempotent binary admission and structured failure details. Retry/recovery, richer parser routing, and logging are still incomplete. |
-| 5.2 | Operational definition of done | Partial | Duplicate event and duplicate-job protections are now present in code, but restart reconciliation, transient retries, and throughput behavior are not fully proven by integration tests. |
-| 6-7 | Mandatory test scenarios and test strategy | Not implemented | Focused unit tests now cover the file-stability handoff, MIME rule matching, structural validators, failure-field helpers, guarded state transitions, and the unique ingestion-job guard. The full mandatory integration test set is still missing for recovery and throughput. |
+| 5.2 | Operational definition of done | Partial | Duplicate event protections, duplicate-job protections, and non-blocking watcher scheduling are now present in code, but restart reconciliation, transient retries, and throughput behavior are not fully proven by integration tests. |
+| 6-7 | Mandatory test scenarios and test strategy | Not implemented | Focused unit tests now cover the file-stability handoff, MIME rule matching, structural validators, failure-field helpers, guarded state transitions, the unique ingestion-job guard, added/modified event scheduling, per-path debounce, and safety limits. The full mandatory integration test set is still missing for recovery and throughput. |
 
 ## Schema Review
 
@@ -120,7 +121,7 @@ Commands run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall backend worker tests
-git diff --check -- worker/FileWatcher.py worker/models.py backend/src/models/file_ingestion.py sql/create_file_ingestions_table.sql sql/recreate_schema.sql tests/test_admission_error_and_idempotency.py docs/FILE_WATCHER_IMPROVEMENTS_REVIEW.md
+git diff --check -- worker/FileWatcher.py worker/models.py backend/src/models/file_ingestion.py sql/create_file_ingestions_table.sql sql/recreate_schema.sql tests/test_admission_error_and_idempotency.py tests/test_watcher_async_flow_and_safety.py docs/FILE_WATCHER_IMPROVEMENTS_REVIEW.md
 ```
 
 Result:
@@ -131,15 +132,15 @@ Result:
 Additional verification:
 
 - Searched source, SQL, and docs for watcher, schema, status, retry, MIME, quarantine, deletion, and old `ContentHash`/`MimeType` references.
-- Added and ran focused file-stability, MIME validation, structural validation, and admission idempotency/failure-field tests:
+- Added and ran focused file-stability, MIME validation, structural validation, admission idempotency/failure-field, async watcher scheduling, debounce, and safety-limit tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_file_stability tests.test_mime_validation tests.test_structural_validation tests.test_admission_error_and_idempotency
+.\.venv\Scripts\python.exe -m unittest tests.test_file_stability tests.test_mime_validation tests.test_structural_validation tests.test_admission_error_and_idempotency tests.test_watcher_async_flow_and_safety
 ```
 
 Result:
 
-- 22 tests passed.
+- 27 tests passed.
 
 Note:
 
