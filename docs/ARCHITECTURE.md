@@ -1,11 +1,11 @@
 # RAG Pipeline Architecture
 
-This document provides a detailed overview of the system architecture, components, and data flows built for the RAG (Retrieval-Augmented Generation) Pipeline project.
+This document provides a detailed overview of the system architecture, components, and data flows for the RAG (Retrieval-Augmented Generation) Pipeline project.
 
 ---
 
 ## 1. System Overview
-The RAG Pipeline is a resilient, full-stack application designed to ingest, process, and vectorize documents. It features a modern React frontend, a modular FastAPI backend, and an independent asynchronous worker service for background file processing.
+The RAG Pipeline is a resilient, full-stack application designed to ingest, process, and vectorize documents. It features a modern React frontend, a modular FastAPI backend, and an independent asynchronous worker service for production-grade document admission and preprocessing.
 
 ---
 
@@ -17,7 +17,7 @@ The system uses a centralized identity provider for Single Sign-On (SSO).
 - **Frontend Integration**: Managed via `oidc-client-ts` and a custom React `AuthContext`. It handles login, logout, and automatic silent token renewal.
 - **Backend Security**: 
     - Token validation using **JWKS** (JSON Web Key Sets) fetched from the authority.
-    - Verification of `aud` (audience), `iss` (issuer), and signatures (RS256).
+    - Verification of `aud` (audience: `api://rag-pipeline`), `iss` (issuer), and signatures (RS256).
     - Custom FastAPI dependency `get_current_user` to secure routes.
 
 ---
@@ -27,18 +27,19 @@ Built with **React 19**, **Vite 8**, **TypeScript**, and **Material UI (MUI) v9*
 
 ### Core Modules
 - **Layout System**: 
-    - `MainLayout`: Orchestrates the overall page structure.
-    - `Header`: Contains navigation, brand identity, and the user profile menu.
-    - `Sidebar`: A persistent, toggleable (mini/full) drawer for navigation, visible only to authenticated users.
+    - `MainLayout`: Orchestrates the overall page structure with a **fixed AppBar** and **fluid (full-width) containers**.
+    - `Header`: Contains navigation, brand identity, **ThemeToggle** (Light/Dark mode), and a **UserProfile** menu with Gravatar integration.
+    - `Sidebar`: A persistent, toggleable (mini/full) drawer for navigation, visible only to authenticated users, with active-route highlighting.
 - **Contexts**:
     - `AuthContext`: Manages OIDC sessions and user claims.
     - `ThemeContext`: Provides global Light/Dark mode support with local storage persistence.
 
 ### Key Pages
-- **Home**: Public landing page for unauthorized users.
-- **Dashboard**: Authorized-only overview showing pipeline stats and system health.
-- **Upload Documents**: Interactive interface for single/multiple/folder uploads with real-time progress bars using XHR.
-- **Process Documents**: Tabbed view (Pending/Processed) for monitoring the ingestion status of unique files.
+- **Home**: Public landing page for guests.
+- **Dashboard**: Authorized-only overview showing pipeline stats, recent activity, and system health.
+- **Upload Documents**: Advanced interface for single/multiple/folder uploads with real-time XHR progress tracking.
+- **Process Documents**: Tabbed view (**Pending** vs **Processed**) for monitoring the multi-stage ingestion lifecycle.
+- **Account**: Displays detailed user profile information and OIDC token claims.
 
 ---
 
@@ -47,45 +48,46 @@ Built with **FastAPI** using an **OOP-based Route-Controller-Service** pattern.
 
 ### Layered Structure
 1. **API Layer (`src/api`)**: Defines REST endpoints and integrates security dependencies.
-2. **Controller Layer (`src/controllers`)**: Orchestrates requests, calling multiple services if needed.
-3. **Service Layer (`src/services`)**: Contains core business logic (File I/O, JWT validation, DB operations).
+2. **Controller Layer (`src/controllers`)**: Orchestrates requests (e.g., `UploadController`, `IngestionController`).
+3. **Service Layer (`src/services`)**: Contains core business logic:
+    - `FileService`: Handles atomic file saves (write to `.tmp` -> atomic `os.rename`).
+    - `AuthService`: Manages OIDC discovery and JWT validation.
 4. **Model Layer (`src/models`)**: SQLAlchemy ORM models for SQL Server.
-5. **Core Layer (`src/core`)**: Centralized Pydantic configuration and base resilience utilities.
-
-### Resilience Features
-- **Error Handling**: A custom `@handle_errors` decorator wraps service methods to ensure consistent logging and HTTP responses.
-- **Non-blocking I/O**: Uses `aiofiles` for asynchronous disk operations.
-- **Environment Driven**: Fully configurable via `.env` files.
+5. **Core Layer (`src/core`)**: Centralized Pydantic configuration and base resilience utilities (e.g., `@handle_errors` decorator).
 
 ---
 
-## 5. Worker Architecture
-The `worker/FileWatcher.py` is a standalone, resilient service that monitors the storage directory.
+## 5. Worker Architecture (Admission Layer)
+The `worker/FileWatcher.py` is a standalone, resilient service that monitors the storage directory using OS-level events via `watchfiles`.
 
-- **Technology**: Built with `watchfiles` for high-performance OS-level file event detection.
-- **Independent Context**: It is decoupled from the backend package to allow independent scaling and execution.
-- **Processing Pipeline**:
-    1. **Validation**: Checks file extensions against a whitelist (PDF, DOCX, TXT, MD, etc.).
-    2. **Fingerprinting**: Generates a **SHA-256 hash** of file content for unique identification.
-    3. **Deduplication**: Checks the database to see if the content has already been processed.
-    4. **Status Management**: Updates the lifecycle of the document in the database (`Pending` -> `Processing` -> `Processed`/`Duplicate`).
+### Processing Pipeline
+1. **Stability**: Ignores `.tmp` files; only processes files after the atomic rename to ensure they are fully written.
+2. **Validation**: 
+    - **Whitelisting**: Only allows supported document formats (PDF, DOCX, TXT, MD, etc.).
+    - **Content Sniffing**: Uses the `filetype` library to verify MIME types by signature, preventing extension spoofing.
+    - **Structural Checks**: Basic PDF validation (encryption/corruption) using `pypdf`.
+3. **Quarantine**: Rejected files are moved to `uploads/quarantine/` instead of being deleted, with failure reasons stored in the DB.
+4. **Fingerprinting**: Generates a **SHA-256 BinaryHash** for unique content identification.
+5. **Deduplication**: 
+    - If `BinaryHash` exists: Marks upload as `DuplicateBinary`.
+    - If new: Creates canonical `file_metadata` and enqueues work in `file_ingestions`.
 
 ---
 
 ## 6. Database Schema (SQL Server)
 The system uses **SQL Server** with **Windows Authentication**.
 
-- **`uploads`**: Records every physical file upload, generating a unique GUID for storage (`filename__{GUID}.ext`).
-- **`file_metadata`**: Stores metadata for unique file content (Hash, MimeType, Size) to prevent redundant vectorization.
-- **`file_ingestions`**: Tracks the status of the RAG ingestion process for each unique document.
+### Core Tables
+- **`uploads`**: Tracks every physical upload attempt. Includes detailed admission states (`Validating`, `Accepted`, `Rejected`, `DuplicateBinary`).
+- **`file_metadata`**: The canonical record for unique content. Stores `BinaryHash`, MIME type, file size, page counts, and encryption status.
+- **`file_ingestions`**: Tracks the searchability lifecycle (Stages: `AdmissionComplete`, `Preprocessing`, `Parsed`, `Chunking`, `Embedding`, `Indexed`).
 
 ---
 
-## 7. Data Ingestion Flow
-1. **User Uploads**: Frontend sends file + Bearer token to Backend API.
-2. **Backend**: Generates GUID -> Saves to disk -> Creates record in `uploads` table (Status: `Pending`).
-3. **Worker**: Detects new file -> Validates format -> Calculates SHA-256 hash.
-4. **Deduplication**: 
-    - If hash exists: Update upload record (Status: `Duplicate`).
-    - If hash is new: Create `file_metadata` record -> Create `file_ingestions` record (Status: `Pending`) -> Update upload record (Status: `Processed`).
-5. **Frontend**: The "Process Documents" page polls the API and reflects the status update in the UI.
+## 7. Data Lifecycle
+1. **Upload**: User uploads file -> Backend saves as `.tmp` -> Renames to `filename__{GUID}.ext` -> DB record `Pending`.
+2. **Admission**: Worker detects rename -> Validates content -> Computes `BinaryHash`.
+3. **Identity**: 
+    - Duplicate content found -> Upload marked `DuplicateBinary`.
+    - New content found -> `file_metadata` created -> `file_ingestions` entry added with status `Pending`.
+4. **Ingestion (Next Stage)**: Downstream workers will pick up `Pending` ingestions for parsing and vectorization.
