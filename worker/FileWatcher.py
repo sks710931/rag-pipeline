@@ -2,10 +2,10 @@ import asyncio
 import os
 import logging
 import hashlib
-import mimetypes
 import uuid
 import filetype
 import shutil
+import zipfile
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
@@ -34,9 +34,21 @@ STABILITY_CHECKS = int(os.getenv("FILE_STABILITY_CHECKS", "3"))
 STABILITY_INTERVAL_SECONDS = float(os.getenv("FILE_STABILITY_INTERVAL_SECONDS", "1.0"))
 
 SUPPORTED_EXTENSIONS = {
-    '.txt', '.pdf', '.doc', '.docx', '.md', '.markdown', 
+    '.txt', '.pdf', '.doc', '.docx', '.md', '.markdown',
     '.html', '.htm', '.rtf', '.odt', '.csv', '.tsv', '.json'
 }
+
+TEXT_EXTENSIONS = {'.txt', '.md', '.markdown', '.json', '.csv', '.tsv'}
+HTML_EXTENSIONS = {'.html', '.htm'}
+SIGNATURE_MIME_BY_EXTENSION = {
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.odt': 'application/vnd.oasis.opendocument.text',
+    '.rtf': 'application/rtf',
+}
+BINARY_MIME_EXTENSIONS = set(SIGNATURE_MIME_BY_EXTENSION)
+OLE_COMPOUND_HEADER = bytes.fromhex("D0CF11E0A1B11AE1")
 
 class FileWatcher:
     def __init__(self, watch_dir: Path):
@@ -95,6 +107,132 @@ class FileWatcher:
             previous = current
 
         return True
+
+    @staticmethod
+    def _read_prefix(path: Path, size: int = 4096) -> bytes:
+        with open(path, "rb") as f:
+            return f.read(size)
+
+    @staticmethod
+    def _decode_text_prefix(prefix: bytes) -> str | None:
+        if b"\x00" in prefix:
+            return None
+
+        for encoding in ("utf-8-sig", "utf-8"):
+            try:
+                return prefix.decode(encoding)
+            except UnicodeDecodeError:
+                continue
+        return None
+
+    def _detect_signature_mime(self, path: Path, extension: str) -> tuple[str | None, str | None]:
+        prefix = self._read_prefix(path)
+
+        if extension == ".pdf":
+            if prefix.startswith(b"%PDF-"):
+                return "application/pdf", "signature"
+            return None, None
+
+        if extension == ".doc":
+            if prefix.startswith(OLE_COMPOUND_HEADER):
+                return "application/msword", "signature"
+            return None, None
+
+        if extension == ".rtf":
+            if prefix.startswith(b"{\\rtf"):
+                return "application/rtf", "signature"
+            return None, None
+
+        if extension in {".docx", ".odt"}:
+            try:
+                with zipfile.ZipFile(path) as archive:
+                    names = set(archive.namelist())
+                    if extension == ".docx":
+                        if "[Content_Types].xml" in names and "word/document.xml" in names:
+                            return (
+                                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                "signature",
+                            )
+
+                    if extension == ".odt" and "mimetype" in names:
+                        mimetype = archive.read("mimetype").decode("ascii", errors="ignore")
+                        if mimetype == "application/vnd.oasis.opendocument.text":
+                            return mimetype, "signature"
+            except (OSError, zipfile.BadZipFile):
+                return None, None
+
+        return None, None
+
+    def _detect_text_mime(self, path: Path, extension: str) -> tuple[str | None, str | None]:
+        prefix = self._read_prefix(path)
+        text = self._decode_text_prefix(prefix)
+        if text is None:
+            return None, None
+
+        if extension in HTML_EXTENSIONS:
+            lower_text = text.lstrip().lower()
+            html_markers = ("<!doctype html", "<html", "<head", "<body")
+            if lower_text.startswith(html_markers) or any(marker in lower_text for marker in html_markers):
+                return "text/html", "text"
+            return "text/plain", "text"
+
+        if extension == ".json":
+            return "application/json", "text"
+
+        if extension in TEXT_EXTENSIONS:
+            return "text/plain", "text"
+
+        return "text/plain", "text"
+
+    async def validate_extension_mime(
+        self,
+        path: Path,
+        extension: str,
+        sniffed_mime: str | None,
+    ) -> tuple[bool, str, str, str]:
+        """Validate that detected content type belongs to the extension family."""
+        extension = extension.lower()
+        if extension not in SUPPORTED_EXTENSIONS:
+            return False, "UNSUPPORTED_EXTENSION", "", ""
+
+        if extension in BINARY_MIME_EXTENSIONS:
+            signature_mime, signature_source = await asyncio.to_thread(
+                self._detect_signature_mime,
+                path,
+                extension,
+            )
+            expected_mime = SIGNATURE_MIME_BY_EXTENSION[extension]
+            if signature_mime == expected_mime:
+                source = "sniffed" if sniffed_mime == expected_mime else signature_source or "signature"
+                return True, "", signature_mime, source
+
+            detected_mime = sniffed_mime
+            source = "sniffed" if sniffed_mime else ""
+            if not detected_mime:
+                text_mime, text_source = await asyncio.to_thread(self._detect_text_mime, path, extension)
+                detected_mime = text_mime or "application/octet-stream"
+                source = text_source or "unknown"
+
+            return False, "MIME_MISMATCH", detected_mime, source
+
+        if sniffed_mime and not sniffed_mime.startswith("text/") and sniffed_mime not in {
+            "application/json",
+            "application/xml",
+            "text/csv",
+            "text/tab-separated-values",
+        }:
+            return False, "MIME_MISMATCH", sniffed_mime, "sniffed"
+
+        text_mime, text_source = await asyncio.to_thread(self._detect_text_mime, path, extension)
+        if not text_mime:
+            return False, "MIME_MISMATCH", sniffed_mime or "application/octet-stream", (
+                "sniffed" if sniffed_mime else "unknown"
+            )
+
+        if extension in HTML_EXTENSIONS and text_mime != "text/html":
+            return False, "MIME_MISMATCH", text_mime, text_source or "text"
+
+        return True, "", text_mime, text_source or ("sniffed" if sniffed_mime else "text")
 
     def _validate_file_structure(self, path: Path, extension: str) -> tuple[bool, str, dict]:
         """Lightweight structural validation."""
@@ -204,6 +342,15 @@ class FileWatcher:
                 await self.quarantine_file(path, "UNSUPPORTED_EXTENSION", upload_id)
                 return
 
+            is_mime_valid, mime_fail_code, detected_mime, mime_source = await self.validate_extension_mime(
+                path,
+                extension,
+                sniffed_mime,
+            )
+            if not is_mime_valid:
+                await self.quarantine_file(path, mime_fail_code, upload_id)
+                return
+
             # 5. Structural Validation
             is_valid, fail_code, meta_hints = await asyncio.to_thread(self._validate_file_structure, path, extension)
             if not is_valid:
@@ -228,8 +375,8 @@ class FileWatcher:
                 new_metadata = FileMetadata(
                     BinaryHash=binary_hash,
                     Extension=extension,
-                    DetectedMimeType=sniffed_mime or mimetypes.guess_type(path)[0] or "application/octet-stream",
-                    OriginalMimeTypeSource="sniffed" if sniffed_mime else "extension",
+                    DetectedMimeType=detected_mime,
+                    OriginalMimeTypeSource=mime_source,
                     FileSize=path.stat().st_size,
                     IsEncrypted=meta_hints.get("is_encrypted", False),
                     IsTextBased=meta_hints.get("is_text", True),

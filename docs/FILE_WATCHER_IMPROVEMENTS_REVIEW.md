@@ -13,6 +13,7 @@ Reviewed areas:
 - `backend/src/controllers/ingestion_controller.py`
 - `sql/*.sql`
 - `tests/test_file_stability.py`
+- `tests/test_mime_validation.py`
 - `docs/ARCHITECTURE.md`
 - `docs/SUPPORTED_FILES.md`
 
@@ -22,18 +23,17 @@ The file watcher has been significantly hardened compared with the "current stat
 
 Overall status:
 
-- Implemented: 4 items
-- Partially implemented: 12 items
+- Implemented: 5 items
+- Partially implemented: 11 items
 - Not implemented: 3 items
 
 The most important remaining risks are:
 
 1. Concurrent workers can still race when creating metadata and ingestion jobs because the dedupe path is check-then-insert and `file_ingestions.BinaryHash` is not unique.
-2. Content MIME detection is present, but extension-to-MIME family validation is not enforced.
-3. DOCX and several supported formats have no real structural validation.
-4. Retry/dead-letter behavior is not implemented beyond a startup reset of some statuses.
-5. The ingestion controller still references old model fields (`ContentHash`, `MimeType`) that no longer exist.
-6. Automated coverage now exists for file stability, but the broader watcher scenarios in sections 6-7 are still mostly untested.
+2. Several supported formats still need deeper structural validation beyond MIME/signature gating.
+3. Retry/dead-letter behavior is not implemented beyond a startup reset of some statuses.
+4. The ingestion controller still references old model fields (`ContentHash`, `MimeType`) that no longer exist.
+5. Automated coverage now exists for file stability and MIME rules, but the broader watcher scenarios in sections 6-7 are still mostly untested.
 
 ## High-Risk Findings
 
@@ -57,28 +57,7 @@ Recommended fix:
 - Use a transaction-safe upsert or handle the primary-key conflict as a duplicate outcome.
 - Add a unique job guard for `file_ingestions.BinaryHash` or an equivalent idempotent queue key.
 
-### 2. MIME sniffing exists, but MIME mismatch enforcement does not
-
-Status: Partial
-
-Evidence:
-
-- `worker/FileWatcher.py:199-201` calls `filetype.guess()`.
-- `worker/FileWatcher.py:203-206` validates the extension allowlist.
-- No code compares the sniffed MIME to the expected MIME family for the extension.
-- `worker/FileWatcher.py:232-233` falls back to `mimetypes.guess_type()` when sniffing returns nothing.
-
-Impact:
-
-A file with a supported extension can still pass admission if its structural validator does not reject it. This is especially risky for supported formats without structural validators, such as `.docx`, `.doc`, `.rtf`, and `.odt`.
-
-Recommended fix:
-
-- Add an explicit extension-to-MIME policy table.
-- Reject mismatches with `MIME_MISMATCH`.
-- Treat unknown sniffing results differently for binary formats vs text formats.
-
-### 3. Basic structural validation is incomplete for supported types
+### 2. Basic structural validation is incomplete for supported types
 
 Status: Partial
 
@@ -86,8 +65,8 @@ Evidence:
 
 - PDF validation exists through `pypdf.PdfReader` at `worker/FileWatcher.py:110-117`.
 - Text-like formats are only checked by reading the first 1 KB as UTF-8 at `worker/FileWatcher.py:119-122`.
-- No DOCX ZIP/container validation exists.
-- No JSON parsing, HTML shape check, CSV/TSV sanity check, DOC/RTF/ODT validation, or encoding fallback exists.
+- DOCX, DOC, RTF, and ODT now have signature/container checks in the MIME gate, but no dedicated structural validators.
+- No JSON parsing, CSV/TSV sanity check, or encoding fallback exists.
 
 Impact:
 
@@ -95,13 +74,13 @@ Supported extensions can be accepted without enough evidence that downstream pre
 
 Recommended fix:
 
-- Add DOCX ZIP structure checks.
+- Add deeper DOCX structure checks beyond the MIME-gate ZIP signature.
 - Parse JSON instead of only decoding a prefix.
 - Validate HTML by text decodability plus a lightweight HTML signature.
 - Add an encoding detection/defaulting policy for text formats.
 - Either validate or temporarily remove formats that are not yet structurally supported.
 
-### 4. Ingestion API still uses removed field names
+### 3. Ingestion API still uses removed field names
 
 Status: Not implemented for compatibility
 
@@ -127,8 +106,8 @@ Recommended fix:
 | --- | --- | --- | --- |
 | 1.1 | Keep watcher as admission component only | Implemented | The watcher validates, hashes, dedupes, creates metadata, and queues a pending ingestion row. It does not do OCR, chunking, embedding, vector DB writes, or LLM calls. |
 | 2.1 | File stability detection before processing | Implemented | Backend writes to `.tmp`, commits the upload DB row, and only then atomically renames to the final watched name. The watcher ignores `.tmp` and quarantine files, defers if the upload row is not visible, marks visible uploads as `Stabilizing`, waits for repeated stable size/mtime checks, resets unstable files to `Pending`, and only proceeds to `Validating` after stability is confirmed. Focused tests cover DB-before-rename ordering, changing-size rejection, and missing-row deferral. |
-| 2.2 | Extension plus content-based MIME validation | Partial | Extension allowlist exists (`FileWatcher.py:35-38`, `140-142`) and `filetype.guess()` is called (`136-137`), but detected MIME is not compared to extension family and `mimetypes.guess_type()` remains a fallback for accepted metadata. |
-| 2.3 | Basic structural validation per file type | Partial | PDF and encrypted PDF checks exist (`110-117`), empty/size checks exist (`102-106`), text-like UTF-8 read exists (`119-122`). DOCX, DOC, RTF, ODT, JSON parsing, CSV/TSV sanity, HTML shape, and encoding detection are missing. |
+| 2.2 | Extension plus content-based MIME validation | Implemented | The watcher now combines the extension allowlist with explicit content validation. Binary document extensions are checked by signature/family rules (`.pdf`, `.doc`, `.docx`, `.odt`, `.rtf`), text-like extensions must be decodable text, HTML must look like HTML, binary signatures are rejected for text extensions, and mismatches are quarantined with `MIME_MISMATCH`. Accepted metadata stores the content-derived `DetectedMimeType` and source. Focused tests cover spoofed PDF text, valid PDF signature, non-HTML text renamed to `.html`, and binary content renamed to `.txt`. |
+| 2.3 | Basic structural validation per file type | Partial | PDF and encrypted PDF checks exist, empty/size checks exist, and text-like UTF-8 reads exist. The MIME gate now performs signature/container checks for DOCX, DOC, RTF, and ODT, but dedicated structural validators for those formats plus JSON parsing, CSV/TSV sanity, and encoding detection are still missing. |
 | 2.4 | Quarantine instead of silent deletion | Implemented | Rejected files are moved with `shutil.move()` to `uploads/quarantine` and `FailureCode`/`QuarantinePath` are saved (`FileWatcher.py:129-147`). No hard delete was found in the watcher. |
 | 2.5 | Separate binary identity from normalized content identity | Implemented | Models and SQL use `BinaryHash` as the primary binary identity and include `ContentHashNormalized` for later normalized text identity (`file_metadata.py:9,17`; `recreate_schema.sql:36,44`). |
 | 2.6 | Expanded status model | Partial | Upload statuses now include `Pending`, `Stabilizing`, `Validating`, `Accepted`, `Rejected`, `DuplicateBinary`, and `AdmissionError`. Missing or unused recommended states include `Detected` and `QueuedForPreprocessing`. Ingestion stage fields exist but no downstream lifecycle is implemented yet. |
@@ -146,10 +125,10 @@ Recommended fix:
 | 3.1 | Uploads schema improvements | Partial | Required columns mostly exist. Missing: stronger status semantics enforcement and consistent population of `DetectedMimeType`, `FailureMessage`, `FailureStage`, and retry fields. |
 | 3.2 | FileMetadata schema improvements | Partial | `BinaryHash`, `Extension`, `DetectedMimeType`, `OriginalMimeTypeSource`, `IsEncrypted`, `IsTextBased`, `PageCount`, `ContentHashNormalized`, `ParserHint`, and admission version exist. Missing: populated `ParserHint` and possibly `DocumentType`/`NeedsOcr` depending on target design. |
 | 3.3 | FileIngestion schema improvements | Partial | `Stage`, `AttemptCount`, `WorkerId`, and processing version fields exist. Missing: `QueueMessageId`/`JobId`, unique job constraint, and actual downstream processing semantics. |
-| 4.1 | Recommended target flow | Partial | Upload API uses DB-record-first temp-to-final rename, and watcher stabilizes files before validation. The watcher validates, hashes, dedupes, and creates a pending ingestion row. Incomplete MIME/structural validation and the missing preprocessing worker mean the full target flow is not complete. |
-| 5.1 | Functional definition of done | Partial | Several functional items are present, but MIME validation, structural coverage, idempotency, failure details, retry/recovery, and logging are incomplete. |
+| 4.1 | Recommended target flow | Partial | Upload API uses DB-record-first temp-to-final rename, and watcher stabilizes files before validation. The watcher validates extension plus MIME, hashes, dedupes, and creates a pending ingestion row. Incomplete structural validation and the missing preprocessing worker mean the full target flow is not complete. |
+| 5.1 | Functional definition of done | Partial | Several functional items are present, but structural coverage, idempotency, failure details, retry/recovery, and logging are incomplete. |
 | 5.2 | Operational definition of done | Not implemented | Duplicate events, restart reconciliation, transient retries, and throughput behavior are not proven by code or tests. |
-| 6-7 | Mandatory test scenarios and test strategy | Not implemented | Focused unit tests now cover the file-stability handoff. The full mandatory test set is still missing for MIME validation, structural validation, duplicate races, recovery, and throughput. |
+| 6-7 | Mandatory test scenarios and test strategy | Not implemented | Focused unit tests now cover the file-stability handoff and MIME rule matching. The full mandatory test set is still missing for structural validation, duplicate races, recovery, and throughput. |
 
 ## Schema Review
 
@@ -169,9 +148,8 @@ Schema gaps:
 
 ## Documentation Drift
 
-`docs/ARCHITECTURE.md` mostly reflects the newer design, but it overstates a few details:
+`docs/ARCHITECTURE.md` mostly reflects the newer design, but it still overstates one detail:
 
-- It says content sniffing verifies MIME types by signature. The code sniffs MIME but does not enforce MIME-family matching.
 - It says production-grade admission and preprocessing, but preprocessing is not implemented yet.
 
 `docs/SUPPORTED_FILES.md` appears stale:
@@ -184,7 +162,7 @@ Commands run:
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall backend worker tests
-git diff --check -- backend/src/services/file_service.py worker/FileWatcher.py tests/test_file_stability.py docs/FILE_WATCHER_IMPROVEMENTS_REVIEW.md
+git diff --check -- backend/src/services/file_service.py worker/FileWatcher.py tests/test_file_stability.py tests/test_mime_validation.py docs/FILE_WATCHER_IMPROVEMENTS_REVIEW.md
 ```
 
 Result:
@@ -195,15 +173,15 @@ Result:
 Additional verification:
 
 - Searched source, SQL, and docs for watcher, schema, status, retry, MIME, quarantine, deletion, and old `ContentHash`/`MimeType` references.
-- Added and ran focused file-stability tests:
+- Added and ran focused file-stability and MIME validation tests:
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest tests.test_file_stability
+.\.venv\Scripts\python.exe -m unittest tests.test_mime_validation tests.test_file_stability
 ```
 
 Result:
 
-- 3 tests passed.
+- 7 tests passed.
 
 Note:
 
@@ -214,9 +192,8 @@ Note:
 Priority 1:
 
 1. Fix `backend/src/controllers/ingestion_controller.py` to use `BinaryHash` and `DetectedMimeType`.
-2. Add MIME-family enforcement with explicit `MIME_MISMATCH` failures.
-3. Add DOCX ZIP/container validation or remove DOCX from the accepted set until validation exists.
-4. Make concurrent metadata/job creation transactionally idempotent.
+2. Add deeper DOCX/DOC/RTF/ODT structural validation beyond the MIME gate, or remove formats that are not yet structurally supported.
+3. Make concurrent metadata/job creation transactionally idempotent.
 
 Priority 2:
 
