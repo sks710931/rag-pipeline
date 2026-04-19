@@ -13,12 +13,12 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const oidcConfig: UserManagerSettings = {
-  authority: 'https://authserver-cwa3c8ddgydva8e9.eastus-01.azurewebsites.net/',
-  client_id: 'sso-admin-ui',
-  redirect_uri: 'http://localhost:5173/signin-oidc',
-  post_logout_redirect_uri: 'http://localhost:5173/signout-callback-oidc', // Adjusting to http to match redirect_uri
+  authority: import.meta.env.VITE_OIDC_AUTHORITY,
+  client_id: import.meta.env.VITE_OIDC_CLIENT_ID,
+  redirect_uri: import.meta.env.VITE_OIDC_REDIRECT_URI,
+  post_logout_redirect_uri: import.meta.env.VITE_OIDC_POST_LOGOUT_REDIRECT_URI,
   response_type: 'code',
-  scope: 'email profile roles offline_access openid identity.manage',
+  scope: import.meta.env.VITE_OIDC_SCOPES,
   automaticSilentRenew: true,
   userStore: new WebStorageStateStore({ store: window.localStorage }),
   loadUserInfo: true,
@@ -32,25 +32,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    // Check for an existing session on load
     userManager.getUser().then((currentUser) => {
       setUser(currentUser);
       setIsLoading(false);
     });
 
-    // Event listeners for session changes
-    const onUserLoaded = (loadedUser: User) => {
-      setUser(loadedUser);
-    };
-
-    const onUserUnloaded = () => {
-      setUser(null);
-    };
-
+    const onUserLoaded = (loadedUser: User) => setUser(loadedUser);
+    const onUserUnloaded = () => setUser(null);
     const onAccessTokenExpired = () => {
-      userManager.signinSilent().catch(() => {
-        setUser(null);
-      });
+      userManager.signinSilent().catch(() => setUser(null));
     };
 
     userManager.events.addUserLoaded(onUserLoaded);
