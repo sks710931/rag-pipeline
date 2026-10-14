@@ -1887,7 +1887,7 @@ For containerized on-prem TPM, prefer a **small host key agent** with narrowly a
 
 ### 32.7 Slice 0 product UX and explicit failure states
 
-**Order:** secure one-time owner creation (§22 and [Slicing strategy](Slicing%20strategy.md)) → initial admin login → **Protect your installation** (choose/detect protector; TPM/Vault/software) → create/export protected recovery kit or configure enterprise escrow → verify recovery → activate MEK/KEK protection → third-party integration wizard (Foundry, SMTP, OIDC, embedding/LLM, etc.) → dashboard. App login/administrative recovery remains possible if key protection is temporarily unavailable; do not allow wizard secrets or provider jobs until the protector is healthy.
+**Order:** secure one-time owner creation (§22 and [Slicing strategy](Slicing%20strategy.md)) → initial admin login → **Protect your installation** (tested software-root or configured Vault/KMS; optional TPM only in distributions where its host agent is actually installed and validated) → independently protected recovery/escrow and verification → activate MEK/KEK → real Setup Center with only **implemented and capability-enabled** provider integrations → dashboard. Foundry/SMTP/OIDC/embedding/LLM cards become usable in their respective delivery slices (§33.5). App login/administrative recovery remains possible if key protection is temporarily unavailable; do not allow wizard secrets or provider jobs until the protector is healthy.
 
 **UI states:** NOT_INITIALIZED; PROTECTOR_DETECTED; SETUP_IN_PROGRESS; RECOVERY_PENDING; RECOVERY_VERIFIED; ACTIVE; DEGRADED; LOCKED/RECOVERY_REQUIRED; ROTATING; RETIRED. Show the selected protector, security/recovery readiness, key version (non-secret), protected integration count and last tested status; **never display or download raw MEKs**. Users who skip optional TPM must explicitly choose a safe alternative; do not turn encryption off to improve onboarding. Only authorized deployment/tenant administrators may configure/rotate keys according to scope; enforce step-up MFA and second-person approval for destructive enterprise actions when required.
 
@@ -1958,7 +1958,7 @@ Protect bootstrap token from ordinary container-startup logs; trust forwarded he
 
 ## 34. Definition of done for the architecture
 
-### 34.A v1.6 cross-runtime delivery gates
+### 34.1 v1.6 cross-runtime delivery gates
 
 - Only .NET owns authoritative CDM/lease/READY PostgreSQL writes and mediates job/epoch/purpose-scoped trusted Python provider credential access.
 - Software-root MEK survives restarts or enters deliberate LOCKED recovery without resetting Superadmin bootstrap; physical TPM agents remain optional.
@@ -1966,7 +1966,7 @@ Protect bootstrap token from ordinary container-startup logs; trust forwarded he
 - Transaction-scoped RLS/multiple-tab tenant access, worker lease renewal, secure uploads and verified-only streaming pass their scheduled slice tests.
 
 
-### 34.0 v1.5 wizard-secret and key-management gates
+### 34.1 v1.5 wizard-secret and key-management gates
 
 - Before saving any third-party integration secret, an encrypted provider-scoped secret store is ACTIVE, authenticated envelope encryption and tenant-bound key wrap checks pass, and authorized account recovery remains independent of optional SMTP/cloud AI.
 - A self-hosted operator can select TPM protection where supported or an explicitly acknowledged secure alternative; the app cannot silently downgrade to plaintext or automatically unlock protected material after protector failure.
@@ -1974,7 +1974,7 @@ Protect bootstrap token from ordinary container-startup logs; trust forwarded he
 - Key/credential rotation is versioned, journaled and testable without losing historical encrypted secret references; old key destruction respects retained data and backups.
 - Unprivileged app users, other tenants and SaaS operators cannot retrieve stored integration secret plaintext or trigger unrestricted unwrap through debug endpoints, logs, IPC or API responses.
 
-### 34.1 v1.4 evidence governance, integration and redaction gates
+### 34.2 v1.4 evidence governance, integration and redaction gates
 
 The following v1.4 capabilities must pass security and correctness tests before they are declared implemented:
 
@@ -1985,7 +1985,7 @@ The following v1.4 capabilities must pass security and correctness tests before 
 - Unauthorized users never receive protected content through raw PDF layers, raster crops, metadata, caches, embeddings/search snippets, model context, exports, citations or agent-tool endpoints. Uncertain sanitization defaults to denial.
 - Knowledge-health metrics distinguish absent evidence from OCR, retrieval, authorization and query ambiguity; tenant/private prompt content cannot be reconstructed from aggregate dashboards.
 
-### 34.2 v1.3 distribution, identity and SaaS gates
+### 34.3 v1.3 distribution, identity and SaaS gates
 
 - A self-hosted instance boots, configures its built-in identity, creates its first tenant and performs normal RAG operations without a vendor SaaS control-plane dependency.
 - SaaS and self-hosted builds use the same authorization contracts and domain model; only documented deployment capabilities and operator services differ.
@@ -1995,7 +1995,7 @@ The following v1.4 capabilities must pass security and correctness tests before 
 - SaaS usage plans/quotas and tenant suspension never elevate RBAC or destroy retained evidence without an audited policy-controlled workflow.
 - Enterprise federation extensions (SAML/AD, SCIM, extra IdPs), stronger isolation and customer-managed AI provider features are considered done **only when implemented and tested**, rather than assumed from v1.3 design.
 
-### 34.3 v1.0–v1.2 evidence-centric RAG baseline gates
+### 34.4 v1.0–v1.2 evidence-centric RAG baseline gates
 
 - A PDF, HTML page, image, Markdown file and plain-text file can each be ingested with original bytes retained, observable processing status, typed elements, and supported source locators.
 - The same content can be reprocessed and reindexed without losing immutable originals, previous citations or audit history.
