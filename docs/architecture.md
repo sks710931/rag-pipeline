@@ -1,9 +1,9 @@
 # Enterprise Multimodal RAG Platform — Architecture
 
 > **Status:** Proposed architecture (implementation specification, not a claim of completed functionality)  
-> **Version:** 1.4 — evidence governance, verifiable publishing, secure agent integrations, review workflows, safe redaction and knowledge quality; all v1.0–v1.3 decisions remain in force  
+> **Version:** 1.5 — adds pluggable Master Encryption Key (MEK) lifecycle and optional TPM-backed on-premises key protection; all prior governance, SaaS, identity and RAG decisions remain in force  
 > **Date:** 2026-10-15  
-> **Revision basis:** v1.3 plus six product capabilities: proactive evidence freshness/contradiction governance, verifiable Evidence Briefs, tenant-scoped MCP, human review, sensitivity-aware redaction, and privacy-preserving knowledge-gap analytics. Existing v1.0–v1.3 decisions, performance gates and open license decision are preserved.  
+> **Revision basis:** v1.4 plus encrypted Integration Setup Center wizard secrets, an explicit DEK/KEK/MEK lifecycle, optional Windows/Linux TPM2 key protection, multi-node/SaaS KMS, tested recovery and rotation. Prior requirements and the open-source license decision remain unchanged.  
 > **Repository:** sks710931/rag-pipeline  
 > **Target:** Open-source core; self-hosted/on-premises and managed multi-tenant SaaS distributions; approximately 10,000 initial documents per sizing scenario, multilingual, cloud AI by default (customer-configurable provider policies).
 
@@ -35,6 +35,7 @@ The following invariants govern all designs and implementations:
 18. **Portable bundles prove integrity, not factual truth.** Signed manifests preserve hashes and lineage, while claim support and calculations require their own verification and documented assumptions.
 19. **External agents have no exceptional authority.** MCP/tools run through the same authenticated tenant, permissions, sanitization, source-verification and usage gates as browser and API callers.
 20. **Quality analytics do not become surveillance.** Abstention and retrieval diagnostics are privacy-controlled tenant summaries, not a way to reveal another user's questions or inaccessible documents.
+21. **Secrets are encrypted independently of credentials/session data.** Provider wizard secrets use authenticated envelope encryption with tenant-associated context, key versioning, narrow decrypt authority and independently tested recovery. A TPM is optional, not a requirement or sole recovery path.
 
 ## 2. Scope and inputs
 
@@ -90,6 +91,7 @@ The same versioned product must support community self-hosting (Docker/VM), cust
 | Binary objects | MinIO locally; Azure Blob in cloud | Original and derived immutable assets |
 | Messaging | RabbitMQ locally; Azure Service Bus in cloud | Durable queues via shared messaging contract |
 | Authentication and sessions | ASP.NET Core Identity; optional OpenIddict token service; BFF cookies; OIDC federation | Built-in users, enterprise SSO, external identities, rotation/revocation; see §22 |
+| Integration secrets and MEK lifecycle | AES-256-GCM per-secret envelope encryption; pluggable Key Protection Provider | TPM2 optional for on-prem; Azure Key Vault/KMS for managed SaaS; safe software/external vault recovery; see §32 |
 | Enterprise federation | Entra ID / Entra External ID, generic OIDC; optional SAML/AD DS or LDAPS integration | Tenant-configured identity providers and group/role mapping |
 | Authorization | Scoped permission catalog + PostgreSQL policy resolver / RLS | Tenant roles, resource ACLs, conditional security policies; OpenFGA remains conditional |
 | SaaS control plane | ASP.NET Core bounded module, optional hosted operator deployment | Tenant provisioning, entitlements, usage, billing and support boundaries |
@@ -486,6 +488,8 @@ PostgreSQL is the system of record; use UUID/ULID identifiers consistently and d
 | workspaces | Tenant-scoped subdivisions above collections; settings, ownership and policies |
 | tenant_identity_providers, external_identities | Issuer/subject identities, federation settings, verified linking and tenant SSO rules |
 | auth_sessions, refresh_token_grants, credentials | Built-in authentication session/grant metadata, rotation families and revocation records; protect sensitive fields |
+| key_protection_profiles, key_versions, key_envelopes | Protector type/capabilities, KEK/MEK lifecycle, tenant association, wrapped-key references, recovery and activation status (never raw key material) |
+| integration_secret_records, integration_secret_versions, secret_access_audit | Encrypted wizard secret ciphertext, AEAD context, wrapped DEKs, provider credential version/rotation and auditable access |
 | role_definitions, permissions, role_assignments, policy_conditions | Built-in and tenant-custom roles, permission keys, scoped assignments and conditional policy gates |
 | service_accounts, api_clients, credential_rotations | Tenant/workspace-scoped machine identities, grants, expiry and audit |
 | scim_connections, provisioning_events | Automated tenant user/group provisioning and deprovisioning |
@@ -979,7 +983,7 @@ No "<15 ms", "15–30 ms", "<80 ms", "10x" or cache-hit target from the external
 
 Initial planning size: **10,000 documents**; actual compute and storage depend on pages, images, tables, OCR proportion, scanned languages and generated retrieval units. A hypothetical 100 pages/document gives approximately 1 million pages; this is a sizing scenario, not an input guarantee.
 
-**Development / self-hosted:** Docker Compose with ASP.NET API, React app, Python workers, PostgreSQL, Qdrant, MinIO, RabbitMQ, local authentication, and observability. Provider credentials supplied by secrets/environment injection. The same application supports single-tenant default and optional multiple tenants, without a vendor SaaS account or network license heartbeat.
+**Development / self-hosted:** Docker Compose with ASP.NET API, React app, Python workers, PostgreSQL, Qdrant, MinIO, RabbitMQ, local authentication, and observability. Provider credentials supplied by secrets/environment injection; wizard-managed credentials use the separately initialized encrypted secrets store (§32), not plaintext database/configuration rows. The same application supports single-tenant default and optional multiple tenants, without a vendor SaaS account or network license heartbeat.
 
 **Managed SaaS production:** Azure Container Apps or Kubernetes for API/workers, managed PostgreSQL, Blob storage, Service Bus and appropriate managed/hosted vector infrastructure. Cloud OCR uses a **Mistral deployment hosted in Microsoft Foundry**, with a separately configured **Azure Document Intelligence in Foundry Tools** resource as specialist fallback. Use horizontal worker queues split by resource class (native extraction, OCR, vision, indexing); separately throttle each Azure provider's expensive AI calls and track provider/region-specific limits.
 
@@ -998,6 +1002,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 ## 18. Implementation roadmap
 
 ### I1 — Platform foundations
+- **MEK/key protection prerequisite:** provide a pluggable `IKeyProtectionProvider`, encrypted integration secret contract (per-secret DEKs and AES-256-GCM), deployment-root/tenant-wrapping key versions, provider secret access audit and a **recovery-capable protector** before enabling S0 Integration Setup Center writes. TPM is optional; SaaS defaults to Key Vault/KMS. See §32 and [Slicing strategy](Slicing%20strategy.md).
 - Add event contract placeholders for immutable saved-answer dependencies, review provenance, sensitivity classification and auditable governance notifications; machine-readable permission catalog includes v1.4 actions, with default-deny policies. The governance UI and remote MCP server are NOT I1 dependencies.
 - Add **deployment mode and capability boundaries** (OSS self-hosted and hosted SaaS share core); automated local bootstrap must not require a vendor SaaS control-plane call.
 - Implement **Tenant → Workspace → Collection → Document** hierarchy, immutable tenant ownership, tenant switcher and tenant-aware DB/RLS, object, queue and cache contracts.
@@ -1010,7 +1015,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - Add **tenant-fair priority outbox scheduling** with SKIP LOCKED claims, recovery and bounded starvation; establish shared provider budgets/throttling interfaces.
 - Add `IAuthorizationPolicyResolver` and PostgreSQL-backed tenant/collection/document checks; design structural scope filtering for future Qdrant indexes. OpenFGA remains optional.
 - Record active version/index generation, staged/durable publication and revocation-first deletion contracts.
-- **Gate:** repeated delivery and worker crashes preserve artifacts; expired Worker A cannot overwrite/publish after Worker B takes over; large extraction payloads never enter the broker; competing outbox tenants get fair service; **built-in/OIDC login, tenant switching, scoped role checks, revoked sessions and cross-tenant RAG isolation** hold under tests, including a completely local self-hosted bootstrap.
+- **Gate:** repeated delivery and worker crashes preserve artifacts; expired Worker A cannot overwrite/publish after Worker B takes over; large extraction payloads never enter the broker; competing outbox tenants get fair service; **built-in/OIDC login, tenant switching, scoped role checks, revoked sessions and cross-tenant RAG isolation** hold under tests, including a completely local self-hosted bootstrap. S0 wizard secrets cannot be saved until key protection is active; a failed/corrupt protector fails closed without reopening Superadmin bootstrap.
 
 ### I2 — Canonical extraction and provenance
 - Implement tenant-scoped reviewer task creation for PARTIAL / UNVERIFIED_* and extraction quality failures, immutable human correction overlays and approval/publish gates without re-OCR. Add sensitivity annotation hooks and conservative restricted-content admission; do not expose partly masked content until full safe-rendition tests pass.
@@ -1050,6 +1055,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** all gold-suite verified calculations are exact across stacked FY/quarter/audit headers; uncertain scales cannot silently corrupt totals; expensive analytics fail explicitly within budgets; diff classes and citations pass evaluation.
 
 ### I6 — Enterprise readiness
+- Validate key rotation/rewrap, restore onto replacement hardware, TPM clearing, SaaS multi-node access, compromised-key response, retention/crypto-erasure and tested tenant-independent key policy. Document alternative secret re-entry when recovery is not possible, and prohibit silent protector downgrade.
 - Expose scoped READ-ONLY remote MCP Streamable HTTP endpoint behind OAuth/resource audience validation and full per-tool RBAC. Add configurable notification delivery, privacy-preserving Knowledge Health dashboards, governance event observability, scheduled revalidation, export signature verification, retention/key rotation and cross-tenant/redaction penetration tests.
 - Harden managed SaaS: tenant provisioning/suspension/termination, plan entitlements, audit-ready usage metering, rate limits, platform-operator separation, backup/restore and SaaS data lifecycle.
 - Add enterprise federation extensions **SAML 2.0, AD DS/LDAPS/federation, Okta, Keycloak and other OIDC**, plus SCIM 2.0, controlled JIT, SSO enforcement and directory-group mapping based on customer priority.
@@ -1173,6 +1179,10 @@ The directory tree is **proposed**, not a claim that the project is already impl
 | ADR-041 | Human review produces append-only, authorized overlays and staged re-publication; dual control for high-impact corrections |
 | ADR-042 | Safe server-side redacted renditions and policy-scoped search/index/LLM context; black visual overlays alone are forbidden |
 | ADR-043 | Tenant-private knowledge quality analytics distinguish missing knowledge from quality, permission or pipeline limitations |
+| ADR-044 | Integration secrets use authenticated per-secret DEK envelope encryption; a pluggable protector wraps tenant KEKs/MEKs, not a monolithic TPM data store |
+| ADR-045 | TPM2 (Windows CNG / Linux TPM2-TSS) is an optional on-prem protector; SaaS uses shared-access KMS/Vault and a separately controlled recovery/migration path |
+| ADR-046 | Key initialization, activation, envelope metadata, rewrap, compromise handling, escrow/recovery, disable and destruction follow versioned, audited lifecycle gates |
+| ADR-047 | Docker app containers avoid broad host TPM device access; a restricted host key agent/IPC is an optional deployment capability, not a SaaS dependency |
 
 Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incremental sync, human annotation workflows and knowledge-graph features without changing the core provenance contracts.
 
@@ -1728,9 +1738,153 @@ Aggregate strictly within authorized tenants/workspaces/collections, only from e
 ### 31.3 Dashboard and SLOs
 
 Provide time-series by outcome/collection, top privacy-safe recurring topics, abstention rate, source-quality gaps, reviewer queue lag, stale citation count, extraction coverage, feedback and recommended human actions. Measure trend stability, cluster precision and false "missing document" accusations on a labeled corpus. Link dashboards to *authorized* review or upload workflows; not to anonymous background crawler actions.
-## 32. Definition of done for the architecture
+## 32. Master Encryption Key lifecycle and pluggable key protection (v1.5)
 
-### 32.1 v1.4 evidence governance, integration and redaction gates
+### 32.1 Decision, scope and threat model
+
+The S0 Integration Setup Center stores cloud OCR/LLM API keys, Azure configuration secrets, SMTP credentials, OAuth/OIDC client secrets and other enabled third-party credentials. **Do not store wizard secrets as plaintext in PostgreSQL, generic appsettings, HTML responses, telemetry, container logs or images.** Use **authenticated envelope encryption** under a versioned key protection service. This is separate from ASP.NET Core Identity password hashing and distinct from ASP.NET Core Data Protection's session/cookie key ring. External refresh tokens, where retained server-side, require similarly protected purpose-specific storage and their own revocation lifecycle.
+
+TPM 2.0 may protect a **root/wrapping key** for a single on-prem host, but is never mandatory, never used to store whole credential blobs, and **never** the only way to restore secrets after motherboard/TPM loss. A stolen encrypted database alone must not reveal plaintext credentials. Conversely, compromise of an authorized running application/worker or an abusive legitimate decrypt permission may still expose secrets; TPM/KMS does **not** eliminate runtime threats. Minimize decrypt principals, scopes and exposure windows.
+
+**Terminology:**
+- **DEK:** Fresh randomly generated symmetric key **per stored secret version** (AES-256-GCM key) encrypting that secret payload.
+- **Tenant KEK (or tenant MEK):** Wrapping layer for the tenant's DEKs; optionally a unique KMS-managed key or a wrapped tenant key in the application.
+- **Deployment root protector:** TPM2, remote KMS/Vault or recovery-enabled software/external vault controlling the tenant KEK envelopes. Configurations may wrap DEKs **directly** with KMS rather than require an additional tenant KEK; the abstraction must represent the actual hierarchy truthfully.
+- **Recovery envelope:** Independently protected authorized path to re-establish wrapping capability, never plain key material in a database backup.
+
+No signing-only TPM ECC/ECDSA key can be used as an encryption/decryption key. If a TPM key performs wrapping, choose and **verify supported encryption/wrap operations**, key usage attributes, non-exportability, provider-specific algorithm and attestation requirements; alternatively seal small random root key material to a supported TPM object. Optional boot/PCR policies must not make routine firmware updates irrecoverably lock users out.
+
+### 32.2 Encryption and persisted record contract
+
+~~~mermaid
+flowchart TD
+  A["Authorized wizard API: credential input"]
+  B["Generate random 256-bit DEK per secret version"]
+  C["AES-256-GCM encrypt + authenticate tenant/secret context"]
+  D["Persist ciphertext, nonce, tag and crypto metadata"]
+  E["Wrap DEK using tenant KEK / KMS"]
+  F["Pluggable key protector: TPM, Vault/KMS or recovery-enabled software"]
+  G["Persist wrapped DEK and versioned key reference"]
+  A --> B --> C --> D
+  B --> E --> F --> G
+~~~
+
+Define an \`ISecretEncryptionService\` above an \`IKeyProtectionProvider\`. Use a vetted crypto library/AEAD; generate a unique nonce for each encryption under a given DEK and enforce nonce/record uniqueness. Include **deploymentId, tenantId, secretId, provider purpose, schema version and immutable secret version** as authenticated additional data (AAD) where supported; bind corresponding metadata to wrapped-key key references and access checks. AES-GCM IV/nonce, authentication tag, ciphertext, wrapped DEK, key version, crypto algorithm and context hash are persisted as a **single immutable secret-version record**. Never use floats, string concatenation or home-grown crypto for key derivation.
+
+Illustrative at-rest record fields (never return these to unprivileged UI):
+
+~~~text
+integration_secret_versions:
+  tenant_id, secret_id, version_id, provider_kind, purpose
+  ciphertext, nonce, authentication_tag, algorithm = AES-256-GCM
+  wrapped_dek, kek_key_id, kek_version, protector_id
+  aad_schema_version, created_at, activated_at, retired_at
+  status = PENDING | ACTIVE | ROTATING | RETIRED | UNRECOVERABLE
+~~~
+
+The browser **never** receives plaintext of a previously saved credential; edits replace with a newly encrypted version. Test connection uses the server-side secret immediately/with controlled lifetime and reports **redacted** result. Only the authorized provider adapter or narrowly scoped secret access service can unwrap/decrypt for a specific tenant and permitted purpose. Never log plaintext/key bytes; keep plaintext in memory no longer than operationally required and zero buffers where a safe API supports it. For very sensitive integrations prefer short-lived managed identity/OAuth workload identities to a persistent provider API key when the provider supports them.
+
+### 32.3 Protector selection by distribution
+
+| Installation mode | Default or recommended protector | Constraints |
+| --- | --- | --- |
+| Windows on-prem, single physical host | Optional TPM2 via Windows CNG / Microsoft Platform Crypto Provider with verified seal/wrapping design | Protect root/wrapping material, not arbitrary document payloads; separate secure recovery required |
+| Linux on-prem, single physical host | Optional TPM2-TSS sealed-object/wrapping adapter, with tested device/platform policy | Secure host permissions, no raw TPM device to broad untrusted containers; recovery required |
+| Docker on customer-owned host | Narrowly authorized **host-side key protection agent** over local IPC if using TPM | Restrict caller OS identity/socket and allowed key/purpose operations; do not expose generic TPM access to full app container |
+| Multi-node on-prem / Kubernetes | Shared external Vault/KMS or key management service (or managed per-node wrap envelopes with quorum recovery) | No dependence on one node's physical TPM for service availability |
+| Managed multi-tenant SaaS | Azure Key Vault/Managed HSM or approved cloud KMS, with Managed Identity and tenant-aware key policy | Customer-managed key option for validated enterprise tier; IAM, region and audit rules enforced |
+| Self-hosted without TPM or vault | Explicitly selected **recovery-enabled software protector** backed by an operator-supplied high-entropy secret/secret-store or protected recovery material | Document brute-force threat, security trade-off and dedicated key storage; **no hardcoded/repository default MEK** |
+
+A key protector must report capabilities and failure modes (key wrap algorithms, key versions, high-availability/recovery support, hardware-backed status, restore requirements) to S0; unsupported TPMs fall back only after explicit owner action. **Do not silently downgrade** from TPM/KMS to software after a failure. An application startup without usable keys stays administratively accessible (via local sign-in) but disables decrypt-dependent integrations and jobs until recovery or authorized re-entry.
+
+### 32.4 Lifecycle: initialize → backup → activate → rotate → recover → retire
+
+| Lifecycle state/action | Invariant and required control |
+| --- | --- |
+| **Initialize** | After one-time Superadmin bootstrap and login, before first wizard secret: choose protector, generate cryptographically random tenant wrapping material or KMS key reference; persist non-secret key version metadata atomically with activation safeguards |
+| **Protect** | Seal/wrap the relevant key under TPM, Vault/KMS, or explicitly selected software/root provider; provider-specific unwrap never trusts request-supplied tenant/key reference alone |
+| **Recoverability check** | Where applicable, create an **independently encrypted offline recovery envelope**, with a high-entropy recovery secret held separately from DB/container backup. Confirm backup was exported; perform a safe read-only recovery drill/challenge before considering recovery READY |
+| **Activate** | Mark key protection ACTIVE only when wrapping, unwrapping, authorization and recovery policy checks pass; prohibit first integration-secret save before then |
+| **Use** | Permit unwrap/decrypt only to authorized server workloads for a scoped tenant/purpose; rate-limit and audit successful/failed access and redact diagnostics |
+| **Rotate KEK/MEK** | Version new wrapping key; **rewrap existing per-secret DEKs** through resumable, idempotent journal/checkpoints and dual-version read window; confirm decryptability across all secret records before retiring older wrapping keys |
+| **Rotate DEK / provider secret** | Re-encrypt plaintext under a new fresh DEK and AEAD nonce; independently rotate the actual provider API secret/OAuth credential with third party (rewrapping alone does not revoke compromised credentials) |
+| **Recover / migrate** | Restore from tenant/database backup onto replacement hardware through controlled recovery envelope/external vault; verify sample/all secret versions, then rewrap under the new protector and audit actor/time; **never reopen Superadmin bootstrap** |
+| **Compromise response** | Revoke affected workload privileges, pause use, assess possible plaintext exposure, rotate actual provider credentials and DEKs when necessary, log alert and establish new key lineage |
+| **Retire / destroy** | Block deletion of old key versions while referenced by active/retained secrets, pending work, restore points or legal holds; destruction requires explicit admin authorization and backup/retention review. Crypto-erasure may make remaining encrypted backups undecryptable |
+
+**Key version changes must be crash-safe.** Do not update a key ID on a record unless the corresponding new wrapped DEK is durable and its round-trip test succeeds. Rotation writes a new envelope or staged version then atomically promotes it; old envelopes remain available throughout the verified migration window. Track progress, failures, partial results and per-tenant audit events.
+
+### 32.5 Recovery and disaster-recovery design
+
+- **TPM loss/clear, motherboard replacement, VM move, PCR drift:** TPM-sealed material may be unavailable; use a **separate** recovery wrapping envelope or approved Vault/KMS escrow. A single TPM-bound key + database backup is **not recoverable**.
+- Recovery kit should contain a versioned, authenticated and **encrypted** recovery envelope, key IDs/version metadata, verifier instructions and supported restore procedure; **never** include plaintext MEK, ordinary app-session secrets, provider API keys or a raw TPM export. For password-based recovery, use a memory-hard password KDF as supported and a genuinely high-entropy recovery passphrase; guard against offline guessing. Organizational escrow/quorum methods may be configured.
+- A malicious actor with just the DB backup must not find the recovery passphrase or unwrap capability alongside it. Support secure detached/offline storage and acknowledge loss scenarios if an operator declines recovery.
+- A **replacement-host drill** is a release gate: restore DB + object files + permitted recovery envelope, recover key material on new host, rewrap tenant keys, test integrations without exposing raw credentials in UI, confirm bootstrap still SEALED and former sessions remain appropriately invalidated. Never simulate success by simply re-entering all credentials.
+- In environments that prohibit key export or escrow, require the enterprise to accept and document alternative re-entry procedure (and resulting downtime/loss of stored secret versions). Do not pretend recovery of an unrecoverable key is possible.
+- Protection of the application database and **ASP.NET Core Data Protection key ring** remains a **separate** operational requirement for authentication sessions; a wizard-key backup does not automatically restore login cookies, and vice versa.
+
+### 32.6 .NET contracts, trust boundaries and key agent
+
+~~~csharp
+public interface IKeyProtectionProvider
+{
+    Task<WrappedKey> WrapAsync(
+        ReadOnlyMemory<byte> dekOrTenantKey,
+        KeyContext context,
+        CancellationToken cancellationToken);
+
+    Task<UnwrappedKey> UnwrapAsync(
+        WrappedKey wrappedKey,
+        KeyContext context,
+        CancellationToken cancellationToken);
+}
+
+public interface ISecretEncryptionService
+{
+    Task<SecretReference> StoreVersionAsync(
+        TenantContext tenant, SecretPurpose purpose,
+        ReadOnlyMemory<byte> plaintext, CancellationToken cancellationToken);
+
+    Task<ScopedSecretLease> AcquireForProviderAsync(
+        TenantContext tenant, SecretReference reference,
+        SecretPurpose purpose, CancellationToken cancellationToken);
+}
+~~~
+
+These are **illustrative contracts**, not compiled definitions; production interfaces must carry key version, explicit access policy, audit/correlation and safe key-buffer handling. Implementations may include \`WindowsCngTpmKeyProtectionProvider\`, \`LinuxTpm2TssKeyProtectionProvider\`, \`AzureKeyVaultKeyProtectionProvider\`, \`ExternalVaultKeyProtectionProvider\` and \`RecoveryEnabledSoftwareKeyProtectionProvider\`. TPM protection is **not** a mandatory microservice for deployments that use Vault/KMS.
+
+For containerized on-prem TPM, prefer a **small host key agent** with narrowly authenticated local IPC and purpose-bound unwrap. The agent must verify caller identity and tenant/key authorization and refuse arbitrary decrypt/wrap operations; do not grant the entire web server container broad /dev/tpm0 or privileged Docker access by default. Defend against compromised app callers through minimum permissions, rate limits, audit and operational key rotation—but be explicit that runtime compromise can still intercept legitimately decrypted secrets.
+
+### 32.7 Slice 0 product UX and explicit failure states
+
+**Order:** secure one-time owner creation (§22 and [Slicing strategy](Slicing%20strategy.md)) → initial admin login → **Protect your installation** (choose/detect protector; TPM/Vault/software) → create/export protected recovery kit or configure enterprise escrow → verify recovery → activate MEK/KEK protection → third-party integration wizard (Foundry, SMTP, OIDC, embedding/LLM, etc.) → dashboard. App login/administrative recovery remains possible if key protection is temporarily unavailable; do not allow wizard secrets or provider jobs until the protector is healthy.
+
+**UI states:** NOT_INITIALIZED; PROTECTOR_DETECTED; SETUP_IN_PROGRESS; RECOVERY_PENDING; RECOVERY_VERIFIED; ACTIVE; DEGRADED; LOCKED/RECOVERY_REQUIRED; ROTATING; RETIRED. Show the selected protector, security/recovery readiness, key version (non-secret), protected integration count and last tested status; **never display or download raw MEKs**. Users who skip optional TPM must explicitly choose a safe alternative; do not turn encryption off to improve onboarding. Only authorized deployment/tenant administrators may configure/rotate keys according to scope; enforce step-up MFA and second-person approval for destructive enterprise actions when required.
+
+### 32.8 Security, operations and acceptance tests
+
+- **Leakage:** database export, browser dev tools, logs, traces, exception handlers, CLI output and support bundles reveal no plaintext stored credential, KEK or recovery passphrase.
+- **Crypto:** authenticated context tampering, altered ciphertext/tag, substituted tenant ID/purpose/key version, duplicate nonce, outdated wrapped DEK and forged key reference fail closed.
+- **Isolation:** Tenant A API/session/worker cannot unwrap Tenant B's secrets. Provider adapter accesses only its allowed purpose; SaaS operator is not silently a tenant secret reader.
+- **TPM:** Windows/Linux supported operations smoke-tested; TPM missing/cleared, PCR change, VM/hardware replacement and Docker key-agent permission failure are handled with safe diagnostics and independently validated recovery.
+- **Lifecycle:** concurrent wizard saves, partial key-rotation crash, old-key retirement while referenced, restoration of stale backups, version replay, compromise response and actual provider credential rotation work under integration/fault tests.
+- **SaaS:** Key Vault/KMS 429/outage and managed identity failures suspend secret-dependent work without insecure downgrade; multi-node requests respect tenant keys, version/lease rules and operational quotas.
+- **Recovery:** restore to **different hardware** with documented offline kit/external KMS recovery, rewrap/test secrets, preserve the sealed Superadmin bootstrap state and verify audited access; test the denied-recovery condition.
+- **Releases:** documented .NET crypto library choices, key service hardening, backup and disposal procedures; operating system TPM features and provider compatibility verified on supported distributions. No arbitrary throughput, cost or absolute anti-compromise guarantees.
+
+The security controls in this section are required for **stored integration secrets in S0**, while TPM-specific and advanced multi-node providers are conditional implementation choices. See [Slicing strategy](Slicing%20strategy.md) for production UI sequence and vertical delivery gates.
+
+## 33. Definition of done for the architecture
+
+### 33.0 v1.5 wizard-secret and key-management gates
+
+- Before saving any third-party integration secret, an encrypted provider-scoped secret store is ACTIVE, authenticated envelope encryption and tenant-bound key wrap checks pass, and authorized account recovery remains independent of optional SMTP/cloud AI.
+- A self-hosted operator can select TPM protection where supported or an explicitly acknowledged secure alternative; the app cannot silently downgrade to plaintext or automatically unlock protected material after protector failure.
+- An independent restore/recovery procedure allows replacement-host recovery when the tenant elected a recoverable policy; inaccessible key material is reported as such rather than silently reset.
+- Key/credential rotation is versioned, journaled and testable without losing historical encrypted secret references; old key destruction respects retained data and backups.
+- Unprivileged app users, other tenants and SaaS operators cannot retrieve stored integration secret plaintext or trigger unrestricted unwrap through debug endpoints, logs, IPC or API responses.
+
+### 33.1 v1.4 evidence governance, integration and redaction gates
 
 The following v1.4 capabilities must pass security and correctness tests before they are declared implemented:
 
@@ -1741,7 +1895,7 @@ The following v1.4 capabilities must pass security and correctness tests before 
 - Unauthorized users never receive protected content through raw PDF layers, raster crops, metadata, caches, embeddings/search snippets, model context, exports, citations or agent-tool endpoints. Uncertain sanitization defaults to denial.
 - Knowledge-health metrics distinguish absent evidence from OCR, retrieval, authorization and query ambiguity; tenant/private prompt content cannot be reconstructed from aggregate dashboards.
 
-### 32.2 v1.3 distribution, identity and SaaS gates
+### 33.2 v1.3 distribution, identity and SaaS gates
 
 - A self-hosted instance boots, configures its built-in identity, creates its first tenant and performs normal RAG operations without a vendor SaaS control-plane dependency.
 - SaaS and self-hosted builds use the same authorization contracts and domain model; only documented deployment capabilities and operator services differ.
@@ -1751,7 +1905,7 @@ The following v1.4 capabilities must pass security and correctness tests before 
 - SaaS usage plans/quotas and tenant suspension never elevate RBAC or destroy retained evidence without an audited policy-controlled workflow.
 - Enterprise federation extensions (SAML/AD, SCIM, extra IdPs), stronger isolation and customer-managed AI provider features are considered done **only when implemented and tested**, rather than assumed from v1.3 design.
 
-### 32.3 v1.0–v1.2 evidence-centric RAG baseline gates
+### 33.3 v1.0–v1.2 evidence-centric RAG baseline gates
 
 - A PDF, HTML page, image, Markdown file and plain-text file can each be ingested with original bytes retained, observable processing status, typed elements, and supported source locators.
 - The same content can be reprocessed and reindexed without losing immutable originals, previous citations or audit history.
