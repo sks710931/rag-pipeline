@@ -1,23 +1,21 @@
 # Enterprise Multimodal RAG Platform — Architecture
 
-> **Status:** **FROZEN ARCHITECTURE BASELINE — v1.5**, approved as the implementation reference (design specification; no claim of completed code or production certification)  
-> **Version:** 1.5 — adds pluggable Master Encryption Key (MEK) lifecycle and optional TPM-backed on-premises key protection; all prior governance, SaaS, identity and RAG decisions remain in force  
+> **Status:** **UNFROZEN — ACTIVE ARCHITECTURE REVISION v1.6** (not yet implementation/production-certified)  
+> **Version:** 1.6 — resolves reviewed cross-runtime trust, key persistence, tenant database safety and progressive delivery; v1.5 provenance and security invariants remain binding  
 > **Date:** 2026-10-15  
-> **Architecture freeze date:** 2026-10-15  
-> **Revision basis:** v1.4 plus encrypted Integration Setup Center wizard secrets, an explicit DEK/KEK/MEK lifecycle, optional Windows/Linux TPM2 key protection, multi-node/SaaS KMS, tested recovery and rotation. Prior requirements and the open-source license decision remain unchanged.  
+> **Historical v1.5 freeze:** 2026-10-15; immutable reference [commit 047974879](https://github.com/sks710931/rag-pipeline/commit/047974879f8fb87292c5a4090bf53e3d28d92a1e). **v1.6 is not frozen.**  
+> **Revision basis:** v1.5 plus accepted external review: explicit Python-worker credential mediation, one authoritative .NET CDM writer, unattended software MEK boot material, progressive setup, transaction-local RLS, renewals, cost/review readiness and secure worker operations. License and deployment SLOs remain open.  
 > **Repository:** sks710931/rag-pipeline  
 > **Target:** Open-source core; self-hosted/on-premises and managed multi-tenant SaaS distributions; approximately 10,000 initial documents per sizing scenario, multilingual, cloud AI by default (customer-configurable provider policies).
 
-## Architecture freeze and change-control policy (v1.5)
+## Architecture revision status and change control (v1.6)
 
-**Baseline decision:** Version **1.5 is frozen for implementation.** Sections 1–33, their technical invariants, selected provider boundaries, distribution model, security requirements, and accepted/deferred ADR decisions collectively form the approved design baseline. This freeze is **not** a source-code freeze, a claim that the design is already implemented, or a guarantee that production readiness tests have passed.
+The owner has **unfrozen historical v1.5** for this review-driven revision. **v1.6 is an active working implementation specification, not frozen.** Original frozen v1.5 is preserved at Git commit `047974879f8fb87292c5a4090bf53e3d28d92a1e`. Do not rewrite that history.
 
-- **Build against the baseline:** Use this document and [Slicing strategy.md](Slicing%20strategy.md) when implementing S0 onward. Implementation details and delivery sequencing may evolve in supporting documents and code provided they preserve v1.5 invariants.
-- **No unreviewed scope growth:** New architecture features, changed security/trust boundaries, replacement technologies, or weakened correctness/authorization requirements must be proposed through a versioned ADR/change request with impact, alternatives, acceptance tests, migration implications and rollback. An approved substantive change creates a new architecture revision (starting with **v1.6**), never a silent rewrite of v1.5.
-- **Fixing design defects:** Security/correctness issues uncovered in implementation are not ignored because of the freeze. Record the problem, severity and decision in an issue/ADR; implement urgent safe remediation as needed, and update the next architecture revision. Only non-semantic errata (typos, formatting and broken links) may be corrected without a new architecture version, with clear commit history.
-- **Protect the historical reference:** The Git commit representing this freeze is the canonical **immutable v1.5 reference**. Future edits to `main` do not alter that historical commit. The branch remains open for implementation and supporting docs; no Git repository branch-protection or release-tag guarantee is implied by this textual freeze.
-- **Outstanding decisions remain outstanding:** Open-source license/commercialization, implementation-time provider availability, formal threat-model details, deployment-specific SLO/RPO/RTO, release operations and tested disaster recovery still require resolution in their respective workflows. They are not implicitly approved by freezing this design.
-- **Acceptance remains empirical:** Architecture quality and production readiness must be demonstrated by the smoke, integration, adversarial security, source-provenance, tenant isolation, MEK recovery, accessibility and release gates defined here and in the slicing strategy.
+- Build against v1.6 and [Slicing strategy v1.2](Slicing%20strategy.md), with all existing immutable-original, CDM provenance, authorization, tenant, evidence, security and claim-check invariants intact.
+- Substantive trust-boundary/technology/schema changes require a reviewed ADR, risks, tests, migration/rollback and version update. Correct urgent defects without waiting for a new freeze, documenting the decision. Minor formatting fixes are errata.
+- Existing S0 onboarding can be a fully finished product experience without shipping all downstream OCR/AI adapters at once. UI may not claim unsupported capabilities work.
+- A later freeze requires explicit owner approval. Licensing, security threat model, supported platform matrix and measured production RPO/RTO/SLO remain unresolved until decided and validated.
 
 ## 1. Purpose and architectural principles
 
@@ -48,6 +46,8 @@ The following invariants govern all designs and implementations:
 19. **External agents have no exceptional authority.** MCP/tools run through the same authenticated tenant, permissions, sanitization, source-verification and usage gates as browser and API callers.
 20. **Quality analytics do not become surveillance.** Abstention and retrieval diagnostics are privacy-controlled tenant summaries, not a way to reveal another user's questions or inaccessible documents.
 21. **Secrets are encrypted independently of credentials/session data.** Provider wizard secrets use authenticated envelope encryption with tenant-associated context, key versioning, narrow decrypt authority and independently tested recovery. A TPM is optional, not a requirement or sole recovery path.
+22. **Python workers are not the secret store or authoritative CDM writer.** Trusted worker provider access is mediated, and only .NET publishes tenant/fenced persistence.
+23. **Enabled integrations are real.** Ship provider adapters with their consuming feature rather than requiring every model integration at Slice 0.
 
 ## 2. Scope and inputs
 
@@ -103,7 +103,7 @@ The same versioned product must support community self-hosting (Docker/VM), cust
 | Binary objects | MinIO locally; Azure Blob in cloud | Original and derived immutable assets |
 | Messaging | RabbitMQ locally; Azure Service Bus in cloud | Durable queues via shared messaging contract |
 | Authentication and sessions | ASP.NET Core Identity; optional OpenIddict token service; BFF cookies; OIDC federation | Built-in users, enterprise SSO, external identities, rotation/revocation; see §22 |
-| Integration secrets and MEK lifecycle | AES-256-GCM per-secret envelope encryption; pluggable Key Protection Provider | TPM2 optional for on-prem; Azure Key Vault/KMS for managed SaaS; safe software/external vault recovery; see §32 |
+| Integration secrets and MEK lifecycle | AES-256-GCM per-secret envelope encryption; pluggable Key Protection Provider | S0: recovery-enabled software protector/KMS; optional TPM host adapter later; authenticated worker broker; see §§32–33 |
 | Enterprise federation | Entra ID / Entra External ID, generic OIDC; optional SAML/AD DS or LDAPS integration | Tenant-configured identity providers and group/role mapping |
 | Authorization | Scoped permission catalog + PostgreSQL policy resolver / RLS | Tenant roles, resource ACLs, conditional security policies; OpenFGA remains conditional |
 | SaaS control plane | ASP.NET Core bounded module, optional hosted operator deployment | Tenant provisioning, entitlements, usage, billing and support boundaries |
@@ -478,7 +478,9 @@ A consumer must **not** check ownership, release its lock, and later write witho
 
 Store derived Blob objects under immutable `runId/attemptId/contentHash` paths, with create-only conditional upload (`If-None-Match: *`) or appropriate storage lease/precondition. **Do not allow overwrite of shared mutable output paths.** Object creation alone does not grant authority to publish: only the winning fenced attempt's verified artifact hashes may be linked by a guarded PostgreSQL transaction. Apply the same check when publishing page manifests, completion messages and the active document/index generation (§15.1). Reconcile stale artifacts asynchronously, respecting claim-check retention and active query leases.
 
-Acceptance tests must pause Worker A past lease expiry, let Worker B finish and publish, then resume A: all of A's stale PostgreSQL writes and active publication must fail; its blob output must never replace B's evidence.
+**Lease renewal (v1.6):** Broker locks and PostgreSQL stage leases must be renewed independently while processing, through a .NET authenticated worker API with epoch/attempt CAS and database time. Typical heartbeat interval is TTL/3 with bounded jitter; yield/checkpoint/reschedule rather than hold the worker during extended 429 Retry-After. Lost renewal stops publication. **Retain the current `expires_at > now()` final commit condition** until an explicit ADR changes the definition of valid ownership; epoch-only commits after expiry are not silently approved.
+
+Acceptance tests must pause Worker A past lease expiry, let Worker B finish and publish, then resume A: all of A's stale PostgreSQL writes and active publication must fail; its blob output must never replace B's evidence. Test lost locks, no-takeover expired leases, renewal races and interrupted long backoff.
 
 ### 7.4 Tenant-fair outbox scheduling and coordinated OCR backpressure (I1/I2)
 
@@ -548,7 +550,7 @@ Shared SaaS databases require composite tenant-aware referential constraints and
 - Store exact-value table cells using NUMERIC/decimal fields plus original literal, locale, unit/currency, **source scale and normalized magnitude**, source header/caption evidence and verification state; no floating-point arithmetic for money.
 - Evidence locators have format-specific validation (PDF page bounds; image pixel bounds; Markdown/text valid source span and encoding; HTML snapshot/anchor existence).
 - Answers link claims to authorized, resolvable evidence IDs, never opaque arbitrary URLs.
-- Support row-level security as defense in depth, with vetted service roles and explicit tenant context; avoid a privileged application role that bypasses all checks.
+- Support row-level security as defense in depth, with vetted service roles and explicit tenant context; avoid a privileged application role that bypasses all checks. **v1.6:** tenant-scoped operations execute within explicit transactions with transaction-local `set_config('app.current_tenant_id', @tenantId, true)`; a non-table-owner `NOBYPASSRLS` runtime role, appropriate `FORCE ROW LEVEL SECURITY`, fail-closed missing context, cheap high-cardinality tenant predicates and measured tenant-leading indexes prevent pooled-connection bleed. Test all EF Core, bulk, outbox and background paths.
 
 ### 8.1.1 Scale-aware numeric and offset-map fields (adopted)
 
@@ -784,6 +786,8 @@ Illustrative response:
 - **Semantic support:** cited content actually supports the associated claim; unsupported assertions are removed, revised or flagged.
 - **Completeness:** numerical output includes input-cell and calculation provenance.
 
+**Latency/verification budget (v1.6):** Apply deterministic authorization, locator, quote/numeric and dependency validation first. Batch semantic support verification for atomic answer groups rather than assuming one paid LLM call per paragraph. Benchmark local NLI and hosted verification by accuracy and time-to-first-verified-block in S6; unsupported claims must still abstain.
+
 Do not conflate a citation that resolves with a citation that proves a claim. Both are evaluated separately.
 
 Citation links open exact immutable source versions. Historical citations remain stable even when a newer version is published, subject to retention and access policy.
@@ -995,7 +999,7 @@ No "<15 ms", "15–30 ms", "<80 ms", "10x" or cache-hit target from the external
 
 Initial planning size: **10,000 documents**; actual compute and storage depend on pages, images, tables, OCR proportion, scanned languages and generated retrieval units. A hypothetical 100 pages/document gives approximately 1 million pages; this is a sizing scenario, not an input guarantee.
 
-**Development / self-hosted:** Docker Compose with ASP.NET API, React app, Python workers, PostgreSQL, Qdrant, MinIO, RabbitMQ, local authentication, and observability. Provider credentials supplied by secrets/environment injection; wizard-managed credentials use the separately initialized encrypted secrets store (§32), not plaintext database/configuration rows. The same application supports single-tenant default and optional multiple tenants, without a vendor SaaS account or network license heartbeat.
+**Development / self-hosted:** Docker Compose with ASP.NET API, React app, Python workers, PostgreSQL, Qdrant, MinIO, RabbitMQ, local authentication, and observability. S0 needs only required active dependencies for authentication, management and encryption; missing Qdrant/OCR/model providers must not prevent local login. Use a low-memory dev Compose profile with bounded/lazy worker loading. Provider credentials supplied by secrets/environment injection; wizard-managed credentials use the separately initialized encrypted secrets store (§32), not plaintext database/configuration rows. The same application supports single-tenant default and optional multiple tenants, without a vendor SaaS account or network license heartbeat.
 
 **Managed SaaS production:** Azure Container Apps or Kubernetes for API/workers, managed PostgreSQL, Blob storage, Service Bus and appropriate managed/hosted vector infrastructure. Cloud OCR uses a **Mistral deployment hosted in Microsoft Foundry**, with a separately configured **Azure Document Intelligence in Foundry Tools** resource as specialist fallback. Use horizontal worker queues split by resource class (native extraction, OCR, vision, indexing); separately throttle each Azure provider's expensive AI calls and track provider/region-specific limits.
 
@@ -1014,6 +1018,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 ## 18. Implementation roadmap
 
 ### I1 — Platform foundations
+- S0 ships the real Setup Center registry and key protector/recovery but **not** unrelated OCR, embedding, vision and generation adapters; configure/test each when its dependent slice ships. Use transaction-scoped RLS and multi-tab tenant-route tests from the beginning.
 - **MEK/key protection prerequisite:** provide a pluggable `IKeyProtectionProvider`, encrypted integration secret contract (per-secret DEKs and AES-256-GCM), deployment-root/tenant-wrapping key versions, provider secret access audit and a **recovery-capable protector** before enabling S0 Integration Setup Center writes. TPM is optional; SaaS defaults to Key Vault/KMS. See §32 and [Slicing strategy](Slicing%20strategy.md).
 - Add event contract placeholders for immutable saved-answer dependencies, review provenance, sensitivity classification and auditable governance notifications; machine-readable permission catalog includes v1.4 actions, with default-deny policies. The governance UI and remote MCP server are NOT I1 dependencies.
 - Add **deployment mode and capability boundaries** (OSS self-hosted and hosted SaaS share core); automated local bootstrap must not require a vendor SaaS control-plane call.
@@ -1030,6 +1035,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** repeated delivery and worker crashes preserve artifacts; expired Worker A cannot overwrite/publish after Worker B takes over; large extraction payloads never enter the broker; competing outbox tenants get fair service; **built-in/OIDC login, tenant switching, scoped role checks, revoked sessions and cross-tenant RAG isolation** hold under tests, including a completely local self-hosted bootstrap. S0 wizard secrets cannot be saved until key protection is active; a failed/corrupt protector fails closed without reopening Superadmin bootstrap.
 
 ### I2 — Canonical extraction and provenance
+- Python produces immutable hash-addressed CDM/page artifacts; **.NET exclusively owns authoritative PostgreSQL checkpoint, lease, CDM and READY writes** through bounded staged bulk import and fenced publication. Deliver minimum OCR reviewer/approval flow near S4/S5.
 - Implement tenant-scoped reviewer task creation for PARTIAL / UNVERIFIED_* and extraction quality failures, immutable human correction overlays and approval/publish gates without re-OCR. Add sensitivity annotation hooks and conservative restricted-content admission; do not expose partly masked content until full safe-rendition tests pass.
 - Enforce tenant-scoped ingestion quotas, tenant-assigned OCR/model policy, provider egress configuration and per-tenant processing audit/usage events.
 - CDM v1, typed element relationships, exact evidence locators and immutable source-derived assets.
@@ -1041,6 +1047,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** a 150-page mixed PDF survives batch failures with correct global page citations and cross-page tables; broken/hidden text layers escalate correctly; local parsing does not require gratuitous per-page DB writes; shared throttles prevent coordinated retry storms; costs and routing remain observable.
 
 ### I3 — Grounded hybrid RAG
+- Benchmark time-to-first-verified-block and batched semantic entailment in S6 without releasing unverified factual tokens as final answers.
 - Persist evidence dependency edges for pinned/saved verified answers; record granular retrieval failures/abstentions and authorization-aware cause codes. Ensure any redacted retrieval context is sanitized BEFORE LLM input and all answer/citation delivery.
 - Enforce workspace/collection/document ACLs end to end for text, tables, figures, citations, query history, exports and service accounts; add permission-revocation tests.
 - Retrieval units, text embeddings, lexical index, Qdrant and fused/reranked retrieval.
@@ -1050,6 +1057,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** citation/grounding tests pass; no leaked/dangling dependent block survives a rejected middle block; permission scopes with many document IDs retain tested recall without leaking access; revoked access fails closed and no partial indexes are queryable.
 
 ### I4 — Full multimodal + HTML
+- Browser-based HTML rendering uses a separate locked-down, resource/egress-limited worker, not a credential-bearing parser; use safe static HTML parsing where sufficient.
 - Add safe server-generated redacted PDF/image derivatives and policy-aware text/HTML/figure citation rendering; validate text layers, original URLs, caches, vector descriptions and image crops cannot leak masked content.
 - Maintain tenant/evidence ownership across image crops, OCR assets, multimodal indexes and rendered HTML; prove no asset URL/cached-result leakage across tenants.
 - Standalone image parsing, OCR, vision descriptions, true cloud multimodal embeddings and image-image queries.
@@ -1058,6 +1066,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** visual queries display authorized originals and correct source locators; HTML/Markdown are safe to render; report per-modality recall/latency/cost.
 
 ### I5 — Tables, comparisons, multilingual
+- Persist cross-version element alignment relationships and bound cross-document contradiction jobs by authorized document families/tags, budgets and review; do not scan all document pairs on each READY.
 - Build publishable immutable Evidence Brief revisions with offline-verifiable signed artifact manifests; trigger READY-driven structural citation freshness checks and reviewed conflict candidates. Extend calculation inputs and signed bundles with exact provenance, review decisions and effective-date policies.
 - Enforce permission-scoped comparisons, deterministic analytics and authorized export actions; tenant policy must govern both source and derived output.
 - Cell-level typed extraction with **multi-level row/column header paths and source-element relations**, caption/header unit and magnitude inheritance; `UNVERIFIED_SCALE`/`UNVERIFIED_HEADER` handling, exact NUMERIC calculations and exclusion provenance.
@@ -1067,6 +1076,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** all gold-suite verified calculations are exact across stacked FY/quarter/audit headers; uncertain scales cannot silently corrupt totals; expensive analytics fail explicitly within budgets; diff classes and citations pass evaluation.
 
 ### I6 — Enterprise readiness
+- Physical on-prem TPM host agents (Windows CNG / Linux TPM2-TSS) are an optional tested deployment capability targeted with S14 distribution, **not a required S0 deliverable**.
 - Validate key rotation/rewrap, restore onto replacement hardware, TPM clearing, SaaS multi-node access, compromised-key response, retention/crypto-erasure and tested tenant-independent key policy. Document alternative secret re-entry when recovery is not possible, and prohibit silent protector downgrade.
 - Expose scoped READ-ONLY remote MCP Streamable HTTP endpoint behind OAuth/resource audience validation and full per-tool RBAC. Add configurable notification delivery, privacy-preserving Knowledge Health dashboards, governance event observability, scheduled revalidation, export signature verification, retention/key rotation and cross-tenant/redaction penetration tests.
 - Harden managed SaaS: tenant provisioning/suspension/termination, plan entitlements, audit-ready usage metering, rate limits, platform-operator separation, backup/restore and SaaS data lifecycle.
@@ -1195,6 +1205,14 @@ The directory tree is **proposed**, not a claim that the project is already impl
 | ADR-045 | TPM2 (Windows CNG / Linux TPM2-TSS) is an optional on-prem protector; SaaS uses shared-access KMS/Vault and a separately controlled recovery/migration path |
 | ADR-046 | Key initialization, activation, envelope metadata, rewrap, compromise handling, escrow/recovery, disable and destruction follow versioned, audited lifecycle gates |
 | ADR-047 | Docker app containers avoid broad host TPM device access; a restricted host key agent/IPC is an optional deployment capability, not a SaaS dependency |
+| ADR-048 | .NET mediates authenticated job/epoch/purpose-scoped credential access for trusted Python provider workers or a gateway; no plaintext in queues |
+| ADR-049 | .NET owns authoritative RLS, stage/checkpoint/CDM writes and READY publication; Python sends immutable attempt-scoped artifacts and authenticated progress |
+| ADR-050 | Self-hosted software root supports explicit unattended persistent mounted secret or intentional manual unlock plus independent encrypted recovery |
+| ADR-051 | Real provider setup cards ship progressively with their consuming slice; S0 has production-grade registry, secrets and first-run UX |
+| ADR-052 | Tenant RLS uses transaction-local context, runtime NOBYPASSRLS and tested pooled connections with stable per-tab tenant routing |
+| ADR-053 | Cloud OCR brings its own per-tenant usage/budget limits and minimum reviewer workflow; SaaS billing may arrive later |
+| ADR-054 | Optional TPM host agents, heavy ML verification and multi-policy derivative indexing are delivered only when supported/benchmarked |
+| ADR-055 | Worker broker-lock and database lease renewal are explicit; expiry-based commit rules remain fail-closed unless changed by ADR |
 
 Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incremental sync, human annotation workflows and knowledge-graph features without changing the core provenance contracts.
 
@@ -1886,9 +1904,69 @@ For containerized on-prem TPM, prefer a **small host key agent** with narrowly a
 
 The security controls in this section are required for **stored integration secrets in S0**, while TPM-specific and advanced multi-node providers are conditional implementation choices. See [Slicing strategy](Slicing%20strategy.md) for production UI sequence and vertical delivery gates.
 
-## 33. Definition of done for the architecture
+## 33. Cross-runtime security, persistence and progressive rollout contracts (v1.6)
 
-### 33.0 v1.5 wizard-secret and key-management gates
+### 33.1 Python worker credentials — job-scoped broker or model gateway
+
+**Root key authority:** Only .NET Secret Management and its configured TPM/KMS/software key-protection provider may unwrap stored tenant integration secrets. Python local parsers, OCR and indexing workers do **not** get root keys, key-envelopes, database secret-read grants or plaintext API keys embedded in queue messages, immutable artifacts, environment images or logs.
+
+**Default: trusted provider-worker credential broker.** A trusted Python *provider* worker (separate from untrusted PDF/HTML parsing processes) uses mutually authenticated internal transport (mTLS/workload identity or equivalent) to request access to a specific provider secret. .NET independently validates **deployment, tenant, job, run/stage, attempt ID, current lease epoch, worker identity, provider purpose, selected egress/region and budgets**, and credential revocation/version before returning the minimum credential over TLS for bounded in-memory use. The broker endpoint is not reachable from public ingress; possessing a job ID alone confers no rights. Replayed credentials, forged tenants and stale epochs are denied.
+
+**Higher isolation:** A centrally protected model gateway may keep vendor secrets server-side and execute bounded provider requests for the worker, at the expense of extra traffic and operational capacity. Where possible prefer provider-managed short-lived workload identities over stored API keys.
+
+**Important limitation:** The broker's *authorization lease* cannot make an underlying long-lived vendor API key short-lived or guarantee revocation after it has been disclosed to a compromised trusted worker. Restrict runtime privileges, memory/log exposure, network egress, provider account scopes and rotate actual vendor credentials after compromise. Do not allow a malicious document to command privileged secret operations.
+
+### 33.2 Single authoritative .NET PostgreSQL writer
+
+Python workers consume validated claim-check IDs and authorized immutable assets, write hash-addressed \`runId/attemptId/contentHash\` CDM/page artifacts, and submit progress/completion/checkpoint references via authenticated .NET worker API or vetted versioned outbox events. **Only .NET authoritative persistence modules** own PostgreSQL schema migrations, tenant-scoped stage leases/checkpoints/usage, CDM element/cell/locator writes and active READY generation promotion. Python has no direct write grants on those domain tables. A benchmarking mention of \`psycopg COPY\` is not authorization to bypass this boundary.
+
+For long documents, .NET validates hashes, manifest schemas, tenant/source scope and global page coverage; imports **bounded, idempotent batches** (for example \`NpgsqlBinaryImporter\`) into attempt/generation-scoped staging records. Then one short fenced transaction verifies coverage and promotes the validated generation atomically. Duplicate or stale worker results cannot overwrite active evidence; recovery reconciles orphan artifacts/staged rows respecting broker retention and query leases.
+
+**Separate leases:** Broker-delivery lock renewal and PostgreSQL lease renewal use different protocols. Authoritative epochs are issued/renewed in .NET conditional transactions with DB clock; workers renew before expiry (initial cadence approx. TTL/3). On long cloud 429 waits, checkpoint, release/reschedule and stop attempting to publish. Expired attempt writes fail; \`expires_at > now()\` remains mandatory until a separately accepted concurrency ADR changes it.
+
+### 33.3 Unattended software MEK persistence and optional TPM
+
+| Protector mode | Boot-time unlocking | Recovery |
+| --- | --- | --- |
+| **S0 Docker software root** | Operator CLI generates or securely injects **high-entropy root material in a protected persistent host-mounted secret file/Docker secret**, not a DB row, app image or committed \`.env\`. Read the same secret on unattended restart; derive context-separated keys using an appropriate KDF. | Separately held **encrypted recovery envelope**, verified off-host, and replacement-machine restoration. File permission \`0600\` alone is not protection against host compromise. |
+| **Manual unlock, opt-in** | Admin supplies a strong protected secret and intentionally unlocks after restart; installation visibly remains LOCKED otherwise. | Independent protected recovery/escrow and audited unlock. Human password KDF must be memory-hard. |
+| **KMS/Vault** | Workload identity performs authorized wrapping/unwrapping against managed root. | Provider-managed recovery/escrow, access and multi-node behavior. |
+
+Never silently create a new root on restart if encrypted secrets already exist; enter RECOVERY_REQUIRED while local Superadmin login and recovery UI remain accessible. A database backup alone must not contain both encrypted secrets and the independent root/recovery unlock material.
+
+**S0 supports production-tested software-root and target KMS adapters, encrypted recovery and key rotation.** TPM capability can be detected/documented in S0, but implementing Windows CNG/Linux TPM2-TSS host key agents and Docker IPC is an **optional on-prem distribution extension targeted to S14**. Do not represent an unimplemented TPM option as ACTIVE.
+
+### 33.4 Secure multi-tenant runtime
+
+Use tenant-aware route context **per tab/operation**, e.g. \`/t/{tenantId}/...\`, not a global mutable cookie-selected tenant alone; backend validates actual membership, resource ACL and purpose each time. All PostgreSQL tenant reads/writes require explicit transaction-local \`set_config('app.current_tenant_id', @id, true)\`, fail closed when unset, runtime DB \`NOBYPASSRLS\` role (not table owner), appropriate forced RLS, and cheap tenant predicates on high-cardinality evidence tables. Permission/collection authorization remains independent. Test tenant A/B switching across pooled Npgsql connections, failures/cancellations, background workers, explicit migrations and concurrent tabs. Index frequent tenant-scoped access patterns based on EXPLAIN, avoiding blindly duplicating every possible index.
+
+Protect bootstrap token from ordinary container-startup logs; trust forwarded headers only from configured reverse proxies. Use mediated streaming for highly sensitive assets or genuinely short-lived authorized download URLs.
+
+### 33.5 Slice and operational gates
+
+- **S0:** real responsive install/login/bootstrap, protected software/KMS secrets with restart/backup/recovery testing, tenant profile/health and a reusable Setup Center; only provider cards backed by usable capabilities are interactive. External AI/TPM is **not** a prerequisite for local login.
+- **S1:** explicit tenant-scoped RLS, membership/role authorization and multiple-browser-tab tests; add OIDC/email cards with actually working client adapters.
+- **S2:** quarantine and validate uploads, archive/PDF/image decompression bounds, supported malware-screening policy (structural checks are *not* a substitute for malware scanner), immutable source and .NET authoritative lease/outbox skeleton. Run untrusted parsers with restricted identity, memory, filesystem and egress.
+- **S3:** native TXT/Markdown/PDF evidence with minimal PDF/line-offset source viewer and UTF-8/Unicode/JS UTF-16/CRLF/BOM test fixtures.
+- **S4–S5:** cloud OCR provider credentials via trusted broker, tenant cost/usage ledger and budget circuit breaker **before** first provider call, per-page checkpoints, and a minimal authorized Extraction Inspector/review/approval path for PARTIAL/UNVERIFIED material before verified Q&A.
+- **S6:** verified-only answer blocks with deterministic locator/claim checks and batched semantic verification; benchmark latency/cost, preserve abstention under low confidence.
+- **S7:** isolated, resource-limited Chromium/Playwright HTML renderer if needed, with metadata/IP/SSRF barriers; static safe parser otherwise.
+- **S10:** durable version-to-version element alignment, reverse-dependency stale citation tracking and quota-bound cross-document contradiction candidates, never unbounded all-pairs scans on every READY.
+- **S12:** initial classification/egress fields live in S1/S2; generate only authorized, policy-versioned sanitized derivative/index views. Bounded default profiles are permitted, but do not permanently force exactly two clearance tiers or lose authorized privileged search.
+
+**Acceptance:** End-to-end security tests prove no queued/bundled credentials, no Python direct CDM updates, rejection of stale write epochs, no cross-tenant RLS/pool leakage, no bad restart-root reset, and a productive S0 without downstream model integration. Future features still satisfy §§16, 23, 24, 30 and 32.
+
+## 34. Definition of done for the architecture
+
+### 34.A v1.6 cross-runtime delivery gates
+
+- Only .NET owns authoritative CDM/lease/READY PostgreSQL writes and mediates job/epoch/purpose-scoped trusted Python provider credential access.
+- Software-root MEK survives restarts or enters deliberate LOCKED recovery without resetting Superadmin bootstrap; physical TPM agents remain optional.
+- S0 is operable without OCR/LLM/embeddings, using authentic, progressively enabled integrations; first cloud OCR includes tenant cost budgets and review flow.
+- Transaction-scoped RLS/multiple-tab tenant access, worker lease renewal, secure uploads and verified-only streaming pass their scheduled slice tests.
+
+
+### 34.0 v1.5 wizard-secret and key-management gates
 
 - Before saving any third-party integration secret, an encrypted provider-scoped secret store is ACTIVE, authenticated envelope encryption and tenant-bound key wrap checks pass, and authorized account recovery remains independent of optional SMTP/cloud AI.
 - A self-hosted operator can select TPM protection where supported or an explicitly acknowledged secure alternative; the app cannot silently downgrade to plaintext or automatically unlock protected material after protector failure.
@@ -1896,7 +1974,7 @@ The security controls in this section are required for **stored integration secr
 - Key/credential rotation is versioned, journaled and testable without losing historical encrypted secret references; old key destruction respects retained data and backups.
 - Unprivileged app users, other tenants and SaaS operators cannot retrieve stored integration secret plaintext or trigger unrestricted unwrap through debug endpoints, logs, IPC or API responses.
 
-### 33.1 v1.4 evidence governance, integration and redaction gates
+### 34.1 v1.4 evidence governance, integration and redaction gates
 
 The following v1.4 capabilities must pass security and correctness tests before they are declared implemented:
 
@@ -1907,7 +1985,7 @@ The following v1.4 capabilities must pass security and correctness tests before 
 - Unauthorized users never receive protected content through raw PDF layers, raster crops, metadata, caches, embeddings/search snippets, model context, exports, citations or agent-tool endpoints. Uncertain sanitization defaults to denial.
 - Knowledge-health metrics distinguish absent evidence from OCR, retrieval, authorization and query ambiguity; tenant/private prompt content cannot be reconstructed from aggregate dashboards.
 
-### 33.2 v1.3 distribution, identity and SaaS gates
+### 34.2 v1.3 distribution, identity and SaaS gates
 
 - A self-hosted instance boots, configures its built-in identity, creates its first tenant and performs normal RAG operations without a vendor SaaS control-plane dependency.
 - SaaS and self-hosted builds use the same authorization contracts and domain model; only documented deployment capabilities and operator services differ.
@@ -1917,7 +1995,7 @@ The following v1.4 capabilities must pass security and correctness tests before 
 - SaaS usage plans/quotas and tenant suspension never elevate RBAC or destroy retained evidence without an audited policy-controlled workflow.
 - Enterprise federation extensions (SAML/AD, SCIM, extra IdPs), stronger isolation and customer-managed AI provider features are considered done **only when implemented and tested**, rather than assumed from v1.3 design.
 
-### 33.3 v1.0–v1.2 evidence-centric RAG baseline gates
+### 34.3 v1.0–v1.2 evidence-centric RAG baseline gates
 
 - A PDF, HTML page, image, Markdown file and plain-text file can each be ingested with original bytes retained, observable processing status, typed elements, and supported source locators.
 - The same content can be reprocessed and reindexed without losing immutable originals, previous citations or audit history.
