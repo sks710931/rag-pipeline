@@ -1,8 +1,9 @@
 # Enterprise Multimodal RAG Platform — Architecture
 
 > **Status:** Proposed architecture (implementation specification, not a claim of completed functionality)  
-> **Version:** 1.0  
+> **Version:** 1.1 — reviewed design; accepted resilience and correctness improvements  
 > **Date:** 2026-10-15  
+> **Revision basis:** *Architectural Review and Optimization Strategy for the Enterprise Multimodal RAG Platform* (19-page review); recommendations classified as adopted, conditional or deferred based on engineering risk and evidence.  
 > **Repository:** sks710931/rag-pipeline  
 > **Target:** Enterprise, hybrid deployment, approximately 10,000 initial documents, multilingual, cloud AI models
 
@@ -22,7 +23,7 @@ The following invariants govern all designs and implementations:
 6. **Access is checked before exposure.** Enforce tenant/collection/document permissions before candidates reach an LLM, and revalidate before evidence, assets, or answers are returned.
 7. **Calculations are deterministic.** Financial and tabular calculations use verified typed data and controlled execution, not LLM arithmetic.
 8. **Failures remain visible.** Missing assets, uncertain parsing, unresolved citations, and unsupported formats must be marked explicitly, never silently omitted.
-9. **Reprocessing is reproducible.** Extraction, OCR, embeddings, and indexes are versioned with input hashes, software versions, configuration, and processing manifests.
+9. **Reprocessing is reproducible.** Extraction, OCR, embeddings, and indexes are versioned with input hashes, software versions, configuration, and processing manifests. Stage outputs live in immutable claim-check objects, not broker messages.
 10. **Providers are replaceable.** Parser, OCR, embedding, reranking, generative model, queue, object store, and index have adapters and versioned contracts.
 
 ## 2. Scope and inputs
@@ -88,7 +89,7 @@ Accept file type only after extension/MIME inspection and safe content sniffing;
 - **Provider identity and availability:** Resolve model identifiers, API versions, supported regions, quotas, input page/file limits, response capabilities and data-handling policy from configuration and startup capability checks. A specific model shown in the Foundry catalog might be preview or not deployable in a chosen region/subscription. Never hardcode a model (including OCR 4.x) without verifying its availability for the deployment.
 - **Failover policy:** invoke Document Intelligence if the Mistral result fails required structure, geometry, provenance or field/cell quality gates; an expensive second pass must be deliberate and auditable. A fallback failure results in `PARTIAL` / review, not a fabricated complete extraction.
 - **Provider reconciliation:** normalize both outputs into the same CDM, preserve each provider's raw response, and record per-element provider/run/quality metadata. Do not blindly merge conflicting cell text, numbers, bounding boxes or table shapes. Validate source-space coordinates before issuing citations.
-- **Long document handling:** choose per-page/per-range jobs and stitch with global page offsets when endpoint limits require splitting; preserve original page numbering and continuation links for multi-page tables.
+- **Long document handling:** use capability-checked page-count/byte limits, deterministic per-page/page-range processing, checkpoints and idempotent stitching. Treat the currently documented Foundry maximum of 30 pages per OCR request as a deployment-specific upper bound subject to runtime verification (also check file/payload limits). Preserve global page numbering and cross-batch table continuation.
 
 Implementation contracts:
 
@@ -122,9 +123,15 @@ DocumentIntelligence:
       LayoutModelId: prebuilt-layout
       CredentialSource: managed-identity-or-key-vault
   Routing:
+    NativeFirst: true
+    DefaultOcrTier: foundry-mistral
+    MaxPagesPerRequest: 20       # conservative configured cap, never above deployed limit
+    TargetPagesPerBatch: 15      # adaptive to serialized payload size and endpoint policy
+    MaxInlinePayloadBytes: null  # required deployment-specific capability/configuration
     FallbackOnMissingRequiredGeometry: true
     FallbackOnInvalidTableStructure: true
     AllowPartialResults: true
+    CloudOcrMonthlyBudget: null   # configured currency/amount/tenant guardrail
 ~~~
 
 Mistral's Foundry deployment and Document Intelligence must have separate adapters, metrics, rate limits, circuit breakers, cost accounting and diagnostic provenance. Do not claim that using both services inside Azure guarantees that no cross-region movement occurs; validate actual selected regions and enterprise egress restrictions.
@@ -136,6 +143,25 @@ Official references:
 - [Microsoft Learn — Document Intelligence SDK / REST API](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/how-to-guides/use-sdk-rest-api?view=doc-intel-4.0.0)
 
 Do not hardcode one exact external model version into the domain. Pin actual provider model IDs, API versions, parser releases, image embedding dimensions and pricing via deploy configuration and record them in processing runs.
+
+### 3.2 Adaptive, quality-gated OCR routing (adopted in v1.1)
+
+Use a per-page classifier before invoking cloud extraction. It inspects native text coverage/Unicode mapping quality, raster coverage, image quality, layout density, language, table structure, and requested evidence granularity.
+
+| Route | Purpose | Provider choice | Admission and failure behavior |
+| --- | --- | --- | --- |
+| 0 — Native | High-quality born-digital text and layout | Docling + PyMuPDF locally | Accept only if text and source geometry pass checks; local extraction has compute cost, not zero cost |
+| 1 — Standard cloud OCR | Simple scanned pages | Cheapest **actually deployed, supported** Foundry OCR profile meeting language/quality requirements | Escalate on low OCR coverage, missing blocks, or failed evidence quality |
+| 2 — Complex cloud OCR | Mixed layouts, multilingual text, equations, figures/charts | Capable Foundry-hosted Mistral OCR/Document AI deployment | Validate blocks, coordinates, language, figures and tables; escalate selectively |
+| 3 — Specialist | Forms, merged/borderless tables, precise cell geometry, unresolved conflicts | Azure Document Intelligence in Foundry Tools | Require field/cell verification and source location; mark PARTIAL or review if still unreliable |
+
+The router selects **a suitable available deployment** by quality, policy, quotas and *current regional meter*; it must not depend on legacy or retired model identifiers listed in the review. Classifier thresholds and routing shares are empirical configuration, not presumed 60/20/15/5 percentages. To avoid silently treating a native text layer as complete, test small sampled/flagged regions against cloud extraction and record misses.
+
+**Mistral Foundry request handling:** validate endpoint/auth audience, supported request modes, page/file limits and actual serialized request size during deployment checks. Split a long PDF deterministically into eligible page windows (configurable starting point 15–20 pages) and *shrink a window further* if base64 transport or size constraints demand it. Do not assume all Foundry deployments accept external URLs, direct base64, or identical SDK payloads; use the verified interface. Checkpoint each page's state, provider request ID, source document hash, run/profile hash, result asset, cost and retry status. On 429/5xx or stage crash, retry only unfinished work with bounded exponential backoff/jitter; record that a timed-out cloud request may still have been billed. A quality failure triggers an explicit specialist fallback for affected pages/regions, not blind second-pass OCR of the entire file.
+
+For tables crossing page windows, retain and verify boundary context (headers, table ID, column geometry/units, continuation candidates). Add `continuation_of` relations only when page transitions are supported by source evidence; flag ambiguous joins for review. All generated page-local regions must be transformed to original **global** page coordinates before publication.
+
+**Unit economics:** calculate `sum(processed_pages_by_actual_provider_model_region * contracted_rate)` plus enrichment/embeddings/retries/storage/compute. Capture per-tenant budgets and request counts. Review-proposed dollar rates and 67–87% savings are scenario claims, **not commitments**: validate rate cards, model availability, actual page distribution and measured false-negative/fallback cost before publishing estimates.
 
 ## 4. Logical architecture
 
@@ -250,7 +276,7 @@ A model-generated description is useful for search but is never substituted for 
 
 Determine per-page strategy: native extraction, OCR, or mixed. Preserve pages, rotation, dimensions, vector/raster originals, paragraphs, headings, columns, reading order, tables (including merged cells and spanning pages), captions, figures, forms, equation source and renderings, embedded attachments, and citations/references where available.
 
-Use Docling/PyMuPDF for native PDF structure, rendering and geometric grounding. When OCR/document understanding is necessary, send eligible PDF pages or images to the **Mistral model deployed on Microsoft Foundry** as the **primary cloud OCR provider**. Use **Azure Document Intelligence in Foundry Tools** selectively for ambiguous layouts, specialized form extraction, missing cell-level geometry, poor-confidence output, or evidence integrity failures. Check regional model availability and actual endpoint capabilities; preserve the raw outputs and extraction provenance of both providers. Route based on diagnostics, supported features, evaluation results and policy, not an assumption one engine is always best.
+Use Docling/PyMuPDF for native PDF structure, rendering and geometric grounding. Classify pages using the adaptive routing policy in §3.2. When OCR/document understanding is necessary, send eligible page windows or images to a **Mistral model deployed on Microsoft Foundry** as the **primary cloud OCR family**. Use **Azure Document Intelligence in Foundry Tools** selectively for ambiguous layouts, specialized form extraction, missing cell-level geometry, poor-confidence output, or evidence integrity failures. Check regional model availability and actual endpoint capabilities; preserve the raw outputs and extraction provenance of both providers. Route based on diagnostics, supported features, evaluation results and policy, not an assumption one engine is always best.
 
 Engineering drawings and dense charts require high-resolution source assets and region-oriented retrieval. Measurements, symbols, connectivity, tolerances and plotted values inferred by vision are **unverified until validated**. Never claim manufacturing-grade extraction accuracy without evidence.
 
@@ -336,13 +362,43 @@ A document version progresses through RECEIVED, VALIDATED, EXTRACTING, NORMALIZI
 
 **Idempotency and recovery:**
 
-- Every job has stable job ID, version ID, stage ID, processing profile hash and idempotency key.
-- Store stage outputs in versioned, content-addressed objects and manifest records before acknowledging work.
+- Every job has stable job ID, tenant ID, version ID, stage ID, processing profile hash and idempotency key.
+- Store stage outputs in versioned, content-addressed objects and manifest records before acknowledging work. Queue envelopes contain only identifiers and verified claim-check references.
 - Use transactional outbox to publish messages tied to metadata commits; assume at-least-once delivery.
 - Reprocessing creates a new processing run and index generation; do not mutate past lineage.
 - Quarantine malicious/oversized input and apply stage-specific timeouts, concurrency limits, exponential backoff and dead-letter handling.
-- Commit publication only when mandatory assets, element graph, ACL projections and retrieval indexes are valid; keep the older ready version visible until cutover.
+- Commit publication only when mandatory assets, element graph, authorization checks, exact retrieval-unit/index manifests and source locators are valid; keep the older ready version visible until cutover.
 - Allow explicit reindex without re-upload or reparse if source/CDM remains compatible.
+
+### 7.1 Claim-check queue contract (adopted)
+
+Document content, CDM JSON, OCR responses, page images, offset maps and vector batches **must not be placed on RabbitMQ/Service Bus messages**. Write immutable stage artifacts to object storage, verify SHA-256/size and existence, then send a small envelope through the transactional outbox. Configure a **target maximum of 16 KiB serialized envelope size** (lower than any applicable broker tier limit); reject oversized publishes.
+
+~~~json
+{
+  "schemaVersion": 1,
+  "jobId": "job-uuid",
+  "tenantId": "tenant-uuid",
+  "documentVersionId": "version-uuid",
+  "processingRunId": "run-uuid",
+  "stage": "normalize",
+  "profileHash": "sha256:...",
+  "idempotencyKey": "stable-stage-key",
+  "artifact": {
+    "assetId": "asset-uuid",
+    "sha256": "sha256:...",
+    "sizeBytes": 12345678
+  }
+}
+~~~
+
+`assetId` resolves to an authorized immutable object through the Evidence/Asset catalog; workers never trust arbitrary blob URLs received in messages. Enforce schema versioning, tenant alignment, hash/length checks, processing lease ownership and outbox durability before acknowledgement.
+
+**Retention race:** never delete the referenced object when the consumer finishes. Keep it through broker redelivery/recovery, dependent runs and required audit retention. Garbage collection is a separate audited workflow that checks final status, dependency graph, retention/legal holds and absence of active leases. Failures go to bounded retry and a diagnosable dead-letter queue, with an administrative replay operation.
+
+### 7.2 Page-level checkpoints and budget-aware retry (adopted)
+
+Persist per-page `PENDING / IN_PROGRESS / COMPLETE / PARTIAL / FAILED / SKIPPED` status, provider/model/run metadata, quality diagnostics, global page ordinal, segment ranges, source/result asset hashes, per-call cost metadata and lease/fencing token. Recover after a crash by reconciling authoritative page manifests, not by assuming a provider request committed. Record external request IDs to detect potential duplicate billing and avoid unnecessary new calls. Checkpoint and stage page results before completion events. Test mixed 150-page PDFs, page-window table stitching, 429/timeout recovery, and zero missing/duplicated pages.
 
 ## 8. Persistent data model
 
@@ -355,15 +411,15 @@ PostgreSQL is the system of record; use UUID/ULID identifiers consistently and d
 | collections, access_policies | Collection scope, ACL inheritance, principals and grants |
 | documents | Logical document identity, tenant/collection, active ready version |
 | document_versions | Immutable hash, MIME, parser profile, original asset, processing/publication status |
-| document_pages_or_views | Page geometry, rendered HTML snapshot, source text viewport metadata |
+| document_pages_or_views | Page geometry, rendered HTML snapshot, source text viewport metadata; optional cached compressed line-start maps for hot citations |
 | document_elements | Typed hierarchy, reading order, source/derived/inferred data, extraction run |
 | element_relationships | Typed element-to-element relations |
 | evidence_locators | PDF polygons, DOM anchors, image regions, Markdown/text line and offset ranges |
 | assets | Immutable binaries, size/hash/type, original/derived classification |
-| extracted_tables, table_rows, table_cells | Cell spans, headers, validated typed values, units/currency, evidence locators |
+| extracted_tables, table_rows, table_cells | Cell spans, headers/captions, original literal, raw/normalized decimal values, inherited scale/unit/currency and evidence locators |
 | retrieval_units, retrieval_unit_elements | Search text/metadata and exact underlying element membership |
 | embedding_profiles, index_generations, index_entries | Provider/model settings, vector IDs, generation/version and state |
-| processing_runs, processing_events, job_outbox | Input profile, outputs, telemetry and durable workflow |
+| processing_runs, processing_events, page_processing_states, job_outbox | Input profile, per-page checkpoints/costs/leases, verified artifact references and durable workflow |
 | conversations, queries, answers | Query/answer versions and provenance |
 | answer_claims, answer_citations | Evidence-backed claim references and semantic support verification |
 | calculation_runs, calculation_inputs | Authorized deterministic expression, contributing input values and result |
@@ -375,10 +431,33 @@ PostgreSQL is the system of record; use UUID/ULID identifiers consistently and d
 - A document version is immutable once published. A new upload/revision creates a new version ID.
 - The logical document points to one active READY version. Never point it to an incomplete index generation.
 - Each retrieval unit maps to one or more CDM element IDs; each index entry records its source retrieval unit and generation.
-- Store exact-value table cells using NUMERIC/decimal fields plus original literal, locale, unit/currency and verification state; no floating-point arithmetic for money.
+- Store exact-value table cells using NUMERIC/decimal fields plus original literal, locale, unit/currency, **source scale and normalized magnitude**, source header/caption evidence and verification state; no floating-point arithmetic for money.
 - Evidence locators have format-specific validation (PDF page bounds; image pixel bounds; Markdown/text valid source span and encoding; HTML snapshot/anchor existence).
 - Answers link claims to authorized, resolvable evidence IDs, never opaque arbitrary URLs.
 - Support row-level security as defense in depth, with vetted service roles and explicit tenant context; avoid a privileged application role that bypasses all checks.
+
+### 8.1.1 Scale-aware numeric and offset-map fields (adopted)
+
+Add these fields to the future table-cell contract (illustrative types; not yet a migration):
+
+~~~sql
+-- Values must be tenant-scoped and tied to original cell + header/caption evidence.
+original_literal         TEXT NOT NULL,
+raw_numeric_value        NUMERIC(38, 10) NULL,
+scale_power_of_ten       SMALLINT NULL,
+normalized_numeric_value NUMERIC(38, 10) NULL,
+unit_code                TEXT NULL,
+currency_code            TEXT NULL,
+scale_source_element_id  UUID NULL,
+numeric_verification     TEXT NOT NULL
+-- e.g. VERIFIED, UNVERIFIED_SCALE, UNVERIFIED_OCR, MISSING_UNIT
+~~~
+
+`scale_power_of_ten = 7` represents a source declaration such as "figures in crores" (10^7), provided that currency, context and scaling convention have been verified. A nullable scale distinguishes unknown from zero; never silently default an unresolved scale to 1. For arbitrary unit conversions, percentages, negative parentheses and non-decimal multipliers, use explicit typed conversion/normalization metadata rather than forcing all conversions into a power of ten.
+
+For Markdown/text citations, the canonical original offset map remains a durable object; optional compressed line-start offsets (byte/code-point) in PostgreSQL or a bounded cache reduce repeated blob fetches. Introduce this cache after measuring citation lookup latency, and validate cached data against the original version/normalization hash.
+
+**Partitioning policy:** implement tenant-scoped composite keys, tenant-filtered indexes and observable slow-query plans from I1. PostgreSQL partitioning by tenant/hash or document/version is an *evaluated scaling option* when real cardinality and explain plans warrant it; partitioning at ingestion start is not a correctness dependency, and naïve per-tenant partitions may create serious operational overhead.
 
 ### 8.2 Binary object layout
 
@@ -387,6 +466,7 @@ tenant/{tenantId}/documents/{documentId}/versions/{versionId}/
   originals/source.ext
   manifests/ingestion.json
   extraction/{runId}/raw-parser-output.json
+  extraction/{runId}/pages/{pageNumber}/page-manifest.json
   canonical/{runId}/cdm.json
   pages/page-0001.png
   assets/figures/{assetId}.png
@@ -429,7 +509,19 @@ Use section-aware chunking rather than a universal character splitter. Start tex
 
 Fuse candidates (e.g., reciprocal rank fusion), deduplicate by canonical element, rerank, expand to parent context, then fetch immutable evidence. Filter by tenant, permissions, collection, document and active version **before** candidates are exposed to the model. Re-check on evidence fetch and asset delivery.
 
-Qdrant and lexical indexes are rebuildable projections. Index entries store tenantId, documentVersionId, retrievalUnitId, modality, indexGenerationId and security filter metadata; ACL changes require correct refresh/invalidation and fail-closed checks. Do not trust stale vector payloads to grant access.
+Qdrant and lexical indexes are rebuildable projections. Index entries store tenantId, collectionId, documentId, documentVersionId, retrievalUnitId, modality and indexGenerationId. Prefer immutable structural identifiers instead of denormalized per-user/group ACL arrays. Authorization is resolved from the authoritative policy provider before candidate exposure, with indexed structural scope prefilters where feasible and a final fail-closed check before context or assets are returned. Immediately deny revoked documents independently of asynchronous index maintenance. Handle large authorized scopes through tested batching/overfetch/planning, without silently collapsing recall. Do not trust stale vector payloads to grant access.
+
+### 9.2.1 Authorization provider and filtered recall (adopted interface; conditional provider)
+
+Define `IAuthorizationPolicyResolver` with `CheckAsync` and `ListAccessibleResourcesAsync` operations. Begin with PostgreSQL-backed resource grants/RLS plus short-lived, invalidatable permissions; keep OpenFGA as an **optional** implementation after measured requirements justify ReBAC graph traversal. Avoid claiming instant propagation or sub-millisecond checks: consistency, cache behavior, permission graph size and list-object latency are observable SLO concerns.
+
+The retrieval planner obtains an authorized, version-pinned document/collection scope from this provider and applies tenant + indexed structural filters as early as practical. It then verifies each candidate before model-context inclusion and reauthorizes on evidence/asset delivery. Measure Recall@K under real mixed-permission filters, authorized-set cardinality and revocation races. No optimization may expose cross-tenant material.
+
+### 9.2.2 Advanced retrieval alternatives (benchmark-gated)
+
+For dense engineering drawings or visually complex pages, assess page/region **late-interaction multi-vector retrieval** (ColPali-family, MaxSim) with two-stage dense/MUVERA-like candidate prefetch. Compare against the default cloud multimodal embedding pipeline on a labeled visual gold set before making it required. Candidate patch saliency is an **approximate localization hint**, never authoritative page geometry or a valid citation polygon without source alignment/verification.
+
+Evaluate Qdrant scalar/binary quantization, original-vector disk placement, oversampling and exact rescoring *per actual embedding family*. Quantization ratios, Recall@20, RAM footprint, and p95 latency must be measured and cannot be copied from illustrative review benchmarks. These are optional I4/I6 optimization ADRs; production must remain correct without them.
 
 ### 9.3 Query stages
 
@@ -487,6 +579,12 @@ Example plan:
 
 Do not silently calculate across incompatible currencies/units or ambiguously OCR-recognized values.
 
+### 10.1 Inherited units and numerical magnitude (adopted)
+
+During normalization, parse table-level titles, adjacent notes, headings, footnotes and column headers for declarations such as "USD in thousands", "₹ crores", "millions", or "%". Link every normalized cell value to **the actual header/caption/footnote source element** that establishes its scale and currency. Verify precedence when cell, column and table-level declarations differ. Materialize normalized values only after type, scale, currency and unit validation; explicitly mark ambiguous cells `UNVERIFIED_SCALE`.
+
+The analytics compiler excludes unverified values by default and returns them in `excluded_records` with reasons and evidence IDs. A request requiring complete totals must return `partial_result` or `insufficient_verified_data` if any material input is excluded; it must not present a partial sum as a complete total. Test mixed "units / thousands / crores", percentages, local decimal separators, signs and cross-document currency mismatches.
+
 ## 11. Grounded answer and citation contract
 
 ### 11.1 Answer structure
@@ -537,6 +635,16 @@ Do not conflate a citation that resolves with a citation that proves a claim. Bo
 
 Citation links open exact immutable source versions. Historical citations remain stable even when a newer version is published, subject to retention and access policy.
 
+### 11.3 Streaming contract — verified blocks only (adopted, NOT speculative claims)
+
+SSE may begin immediately for `query_started`, `retrieval_progress`, `evidence_found`, `verification_progress` and heartbeat events. However, **do not render raw, unverified factual LLM token deltas as an authoritative answer**, even with a provisional badge.
+
+Server processing for each typed block: generate candidate block -> resolve the cited evidence IDs -> enforce current authorization, locator and type checks -> validate claim support against evidence (or deterministic calculation provenance) -> emit `answer_block_verified` carrying a stable ordered block ID and full authorized citation data. Only verified blocks are appended to the answer display. On failure, regenerate, downgrade to an explicit warning, or abstain; never stream an unsupported block and retract it later. The server can pipeline generation/verification of separate blocks, but must preserve deterministic block ordering and query-version pinning.
+
+Client protocol: `query_started`, `progress`, `answer_block_verified`, `warning`, `query_completed`, `query_failed`. Events carry sequence IDs, schema versions and query IDs; reconnect/resume behavior must not duplicate or reorder blocks. If authentication or document access is revoked mid-stream, abort/suppress further protected blocks. Semantic grounding is a graded assessment rather than proof of absolute truth; track unsupported-claim and abstention rates.
+
+LLM prompt caching is an **opportunity, not a promised 80–90% hit rate**. Keep stable system instructions/policy prefixes where provider caching supports them; order evidence deterministically when doing so does not harm relevance, and measure cache-hit/cost against retrieval quality. Never reuse an unauthorized, revoked, changed-version or cross-tenant prompt prefix.
+
 ## 12. React UI and evidence navigation
 
 Workspaces:
@@ -550,6 +658,12 @@ Workspaces:
 **Markdown/text viewer requirements:** show line numbers, exact original line breaks, Raw/Rendered toggle for Markdown, highlighted citation ranges, copy source selection, and safe rendering that never runs embedded scripts or code.
 
 Use generated OpenAPI TypeScript clients, strict compiler checks, discriminated unions, and runtime validation at external boundaries. Avoid directly exposing database or model-provider DTOs as frontend contracts.
+
+### 12.1 Deterministic document/version comparison (adopted)
+
+For `POST /api/v1/queries/compare`, select explicit immutable versions then perform CDM/AST structural alignment **before** semantic retrieval/synthesis. Match using heading ancestry, stable section keys, normalized content hashes and similarity measures, supported by table/figure relationships and provenance. Record `UNCHANGED`, `MODIFIED`, `ADDED`, `REMOVED`, `MOVED`, and `AMBIGUOUS` with original evidence locators. Compare exact cell values, units/scales, figures, captions and deleted clauses, not only the top-K semantically similar paragraphs.
+
+Generate narratives only from verified alignment pairs and resolved evidence. For a change, cite both sides where elements exist; for addition/removal, cite the existing-side element **and** identify the other-side absence as a structural diff result, not a fabricated citation. Ambiguous matches require review or explicit uncertainty. Evaluate added/deleted/modified recall separately and test document restructuring, reordered sections and cross-language revisions.
 
 ## 13. External API v1
 
@@ -595,13 +709,24 @@ Search supports query text, optional image asset reference, collection/document 
 
 ## 15. Operational consistency and failure handling
 
-PostgreSQL transactionally records authoritative metadata and outbox messages; workers use idempotent at-least-once handlers. External object/index writes cannot be in the same ACID transaction, so use staging generations, reconciliations and atomic metadata publication.
+PostgreSQL transactionally records authoritative metadata and outbox messages; workers use idempotent at-least-once handlers. External object/index writes cannot be in the same ACID transaction, so use **staging generations, durable claim-check references, reconciliations and atomic PostgreSQL publication**. This is an application-level publish/saga protocol, not distributed two-phase commit.
 
 **Publication invariant:** A document version is READY only if its mandatory original asset, CDM elements, locator integrity, required retrieval/index generation, and ACL projection pass validation. An older READY version remains served until a replacement is healthy.
 
 Deletion must block new reads first (tombstone + authorization), then remove projections/assets asynchronously with auditable completion. Revocations apply immediately to query/evidence/asset authorization even before all search projections refresh.
 
 Record parser/model failures by stage; never claim partial OCR/visual coverage is complete. Provide operational reconciliation tasks for orphan assets, stale index entries, unresolved citations and incomplete processing.
+
+### 15.1 Version-pinned search and index-generation cutover (adopted)
+
+1. Ingestion builds an immutable new document version and staging retrieval units under a unique `indexGenerationId`; Qdrant vector writes are tagged with `documentVersionId` and `indexGenerationId`.
+2. Reconcile expected retrieval-unit/embedding IDs, page counts, asset/locator integrity and authorization scope against the index manifest. Partially staged generations are never queryable.
+3. In **one PostgreSQL transaction**, mark the new version/index generation READY and update the logical document's `activeVersionId` and `activeIndexGenerationId`. Do not update this pointer until validation succeeds.
+4. Each query pins the authorized active version/generation set it selected (including cross-document searches) and uses that set for filtering, citations and answer construction. Recheck revocation before disclosure.
+5. Superseded generations enter DRAINING. In-flight queries obtain bounded leases, and GC runs only after no active leases, a safe grace period and retention/legal-hold checks. **A fixed 24-hour TTL alone is not a correctness guarantee**; historical source retention depends on enterprise policy.
+6. Reconciler detects partial vector writes, orphan assets, stale active references, expired leases and interrupted cutovers; repair/retry must be idempotent.
+
+An evidence citation can only resolve while its retained immutable source exists and caller authorization permits it. For deletion/legal erasure, revoke reads first; expired/removed historical versions must return an explicit `source_unavailable` rather than claiming permanent availability.
 
 ## 16. Evaluation and acceptance gates
 
@@ -615,14 +740,19 @@ Build a labeled dataset of 300–500 representative multilingual queries, spanni
 | Evidence retrieval | Recall@20 | >= 95% |
 | Citation integrity | Existing authorized exact source references | 100% |
 | Answer grounding | Supported factual claims | >= 98% |
-| Calculations | Correct outputs for validated inputs | 100% |
+| Calculations | Correct outputs for validated inputs, including inherited scale | 100% |
 | Isolation | Cross-tenant/document unauthorized leaks | 0 |
 | Publication consistency | Missing mandatory ready assets/indexes | 0 |
+| OCR batching/replay | Missing, duplicated or out-of-order source page references after retry | 0 |
+| Claim-check durability | Messages with oversized content payloads or missing referenced artifacts on redelivery | 0 |
+| Permissioned retrieval | Unauthorized material reaching LLM, cache or streamed blocks | 0 |
+| Version comparison | Added/removed/modified element recall and bilateral provenance | Measured per document class; acceptance thresholds set by gold suite |
+| Answer streaming | Unverified factual blocks visible as final answer | 0 |
 | Markdown/text citations | Correct original line/span resolution | 100% |
 
 These are **targets, not measured performance or universal guarantees**. Evaluate per language, format and document difficulty; publish failure/abstention rates separately. Use golden files for source-offset reconstruction (especially Markdown CRLF, Unicode, BOM, tabs, footnotes, tables, code fences and relative links).
 
-Automated resilience tests: worker crash at each stage; duplicate delivery; same-file concurrent upload; malformed document; unavailable embedding/model provider; revoked permissions mid-query; index cutover; missing original asset; concurrent reprocess; tombstone during active streaming; HTML/Markdown XSS/prompt-injection payloads.
+Automated resilience tests: worker crash at each stage; duplicate delivery; oversized CDM (> broker limit) through claim-check; artifact retry/GC race; same-file concurrent upload; malformed document; 150-page mixed PDF page splitting and stitched multi-page tables; OCR 429/413/timeouts and potential duplicate billing; unavailable embedding/model provider; revoked permissions mid-query; permission-filtered recall; staged index cutover and in-flight leases; missing original asset; concurrent reprocess; mixed scale financial tables; re-ordered/removed version sections; tombstone during active streaming; unsupported claim suppression; HTML/Markdown XSS/prompt-injection payloads.
 
 Track ingestion throughput and p95 latency, source coverage, bad/missing asset references, retrieval Recall@K/nDCG, claim support, citation resolution, per-query tokens/cost, queue age, retries and tenant-level errors. Establish latency SLOs only after realistic load tests.
 
@@ -634,47 +764,51 @@ Initial planning size: **10,000 documents**; actual compute and storage depend o
 
 **Production:** Azure Container Apps or Kubernetes for API/workers, managed PostgreSQL, Blob storage, Service Bus and appropriate managed/hosted vector infrastructure. Cloud OCR uses a **Mistral deployment hosted in Microsoft Foundry**, with a separately configured **Azure Document Intelligence in Foundry Tools** resource as specialist fallback. Use horizontal worker queues split by resource class (native extraction, OCR, vision, indexing); separately throttle each Azure provider's expensive AI calls and track provider/region-specific limits.
 
-Run ingestion asynchronously with backpressure, quotas, provider retry budgeting, model routing and per-tenant usage reporting. Keep index/asset formats portable between local and cloud adapters.
+Run ingestion asynchronously with backpressure, quotas, provider retry budgeting, model routing and per-tenant usage reporting. Split long PDFs by *actual deployed endpoint capability*, checkpoint at page granularity, and enforce provider-specific budgets. Measure monthly cost by model/region/tenant, including retries, vision enrichment and embeddings, rather than assuming a fixed OCR savings percentage. Keep index/asset formats portable between local and cloud adapters.
 
 ## 18. Implementation roadmap
 
 ### I1 — Platform foundations
 - Repository structure, architecture decision records, contracts, Docker stack and CI.
 - OIDC tenant-aware auth, collection/document metadata, upload sessions, immutable originals and versioning.
-- Durable queue/outbox, status tracking, audit and basic admin UI.
-- **Gate:** immutable uploads, tenant isolation and stage recovery work.
+- Durable queue/outbox using **claim-check-only messages (target <=16 KiB)** with content-hashed immutable artifacts, processing leases, idempotency, retention and replay.
+- Add `IAuthorizationPolicyResolver` and PostgreSQL-backed tenant/collection/document checks; design structural scope filtering for future Qdrant indexes. OpenFGA remains optional.
+- Record active version/index generation, staged/durable publication and revocation-first deletion contracts.
+- **Gate:** repeated delivery and worker crashes preserve artifacts; large extraction payloads never enter the broker; tenant isolation and revocation hold under tests.
 
 ### I2 — Canonical extraction and provenance
-- CDM v1 with element types, typed relationships and evidence locators.
-- Configure Foundry Mistral OCR and Azure Document Intelligence separately; prove endpoint/model capabilities, routing, page offset consistency and provider-specific provenance through integration tests.
-- PDF native/OCR/table/figure parsing with coverage manifests.
-- **Markdown parser with full AST/raw source preservation** and line/span citation anchors.
-- **Plain-text parser with encoding/newline preservation** and line/span citation anchors.
-- Original source viewers and extraction inspector.
-- **Gate:** real extracted content resolves to precise PDF/Markdown/text source ranges.
+- CDM v1, typed element relationships, exact evidence locators and immutable source-derived assets.
+- Configure Foundry Mistral OCR and Azure Document Intelligence separately; verify deployed endpoint identity, quotas, auth, page/file limits, request shape and pricing.
+- Implement **adaptive native/standard/complex/specialist OCR routing**, deterministic page-window batching, per-page checkpoints, selective retry/fallback and cross-window table continuation checks.
+- PDF native/OCR/table/figure parsing with quality/coverage manifests; Markdown AST/line spans and TXT encoding/newline offsets.
+- Optional hot line-offset cache (backed by immutable offset maps), original source viewers and extraction inspector.
+- **Gate:** a 150-page mixed PDF survives batch failures with correct global page citations and cross-page tables; source spans remain exact; costs and routing are observable.
 
 ### I3 — Grounded hybrid RAG
 - Retrieval units, text embeddings, lexical index, Qdrant and fused/reranked retrieval.
-- Access-filtered evidence lookup and structured answer contract.
-- Citation validator, grounded Q&A and SSE streaming.
-- **Gate:** citation/reference integrity and retrieval evaluation thresholds pass.
+- Authority-based permission resolution, tested prefiltered structural scopes, access checks before LLM context and again at evidence/asset delivery; version-pinned read paths.
+- Citation and semantic-support validation; **verified-block SSE** and immediate progress events, never unverified factual token display.
+- Validate staged index generations against manifests and atomically promote READY with drain leases and reconciler.
+- **Gate:** citation/grounding tests pass, unauthorized content is never exposed, revoked access fails closed and no partial indexes are queryable.
 
 ### I4 — Full multimodal + HTML
-- Standalone image parsing, OCR, vision descriptions, true multimodal embeddings and image-image queries.
-- HTML parsing, sanitized DOM snapshots and optional isolated browser rendering.
-- Exact original-figure/image answers and source overlays.
-- **Gate:** visual queries display authorized originals; HTML/Markdown are safe to render.
+- Standalone image parsing, OCR, vision descriptions, true cloud multimodal embeddings and image-image queries.
+- HTML parsing, sanitized DOM snapshots and optional isolated browser rendering; original figure/region viewer overlays.
+- **Benchmark only:** ColPali/late-interaction MaxSim with candidate prefetch, compact multi-vectors and source-aligned regions; adopt if measurable advantage over default retrieval.
+- **Gate:** visual queries display authorized originals and correct source locators; HTML/Markdown are safe to render; report per-modality recall/latency/cost.
 
 ### I5 — Tables, comparisons, multilingual
-- Cell-level typed extraction, verified calculations and arithmetic traceability.
-- Cross-document/version comparisons with conflict reporting.
+- Cell-level typed extraction with caption/header unit and magnitude inheritance; `UNVERIFIED_SCALE` handling, exact NUMERIC calculations and exclusion provenance.
+- **Structural CDM/AST alignment before LLM synthesis** for cross-version comparisons, including added/deleted/moved clauses and bilateral source evidence.
 - Language-aware indexing, code and Markdown quality improvements.
-- **Gate:** exact validated calculations, cross-document citations and multilingual evaluation pass.
+- **Gate:** all gold-suite verified calculations are exact, uncertain scales cannot silently corrupt totals, diff classes and citations pass evaluation.
 
 ### I6 — Enterprise readiness
-- ACL hardening, audit and retention, model egress policy, backups/restore, production Azure deployment.
-- Throughput/cost tuning, recovery tests, security tests, operational dashboards and release gates.
-- **Gate:** documented SLOs, security invariants, quality targets and disaster recovery verified.
+- Enterprise policies, audit/retention, model egress controls, backups/restore, production Azure deployment and SLOs.
+- Load tests for permission-scope filters, vector footprint, ingestion throughput, OCR cost, cold/hot query latency and massive document tables.
+- **Benchmark-driven ADRs:** OpenFGA ReBAC, PostgreSQL partitioning, vector quantization/oversampling/rescoring, hosted late-interaction models, selective prompt caching and model tiers. Adopt only where benefit outweighs complexity.
+- Recovery/security testing, operational dashboards and release gates.
+- **Gate:** measured isolation, extraction, retrieval, citation, availability, cost and disaster-recovery targets pass.
 
 ## 19. Repository structure (target)
 
@@ -738,9 +872,37 @@ The directory tree is **proposed**, not a claim that the project is already impl
 | ADR-007 | Markdown and plain text are native sources, not downgraded to generic unlocated chunks |
 | ADR-008 | Staged index generations with atomic READY cutover and recovery reconciliation |
 | ADR-009 | Cloud AI adapter with data classification/egress controls and model-version tracking |
-| ADR-010 | Azure Foundry-hosted Mistral is the primary cloud OCR; Document Intelligence in Foundry Tools is an independent specialized fallback adapter |
+| ADR-010 | Azure Foundry-hosted Mistral is the primary cloud OCR family; Document Intelligence in Foundry Tools is an independent specialized fallback adapter |
+| ADR-011 | Claim-check-only durable messaging, small envelopes, immutable artifacts and lease/retention-aware GC |
+| ADR-012 | Adaptive and capability-checked page OCR routing, bounded batching, page checkpoints and selective fallback |
+| ADR-013 | Source-scale/units validation for normalized table calculations, with explicit partial results |
+| ADR-014 | Structural CDM/AST document comparison before evidence-grounded synthesis |
+| ADR-015 | Version/generation-pinned queries, staged indexes, atomic READY publication and drain leases |
+| ADR-016 | Verify factual answer blocks before streaming; SSE progress does not imply answer validation |
+| ADR-017 | Authorization abstraction; benchmark OpenFGA; no mutable principal ACL lists in vector payloads |
+| ADR-018 | Benchmark late-interaction visual search, quantization, partitioning and caching before mandatory adoption |
 
 Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incremental sync, human annotation workflows and knowledge-graph features without changing the core provenance contracts.
+
+### 20.1 Review disposition (v1.1)
+
+| Review proposal | Decision | Reason / guardrail |
+| --- | --- | --- |
+| Claim-check envelopes and immutable stage artifacts | **Adopt in I1** | Broker size independence and at-least-once replay safety |
+| Page-window OCR + page checkpoints | **Adopt in I2** | Capability-driven limits and selective reruns |
+| Four-route page complexity classification | **Adopt as policy in I2** | No fixed model generation, pricing or workload distribution |
+| Inherited table scale and units | **Adopt in I5** | Prevent mathematically exact but semantically incorrect totals |
+| Structural version comparison | **Adopt in I5** | Detect deletions/changes missed by top-K search |
+| Version-pinned index cutover + safe GC | **Adopt in I1/I3** | Immutable consistency under crashes and concurrent queries |
+| OpenFGA | **Evaluate in I6** | Provider abstraction now; benchmark scale/consistency before installing |
+| ColPali/MaxSim, MUVERA-like prefetch | **Evaluate in I4** | Optional advanced index after real visual retrieval benchmarks |
+| Binary/vector quantization | **Evaluate in I6** | Model-specific recall/latency/RAM experiments required |
+| Speculative streaming of unverified claims | **Reject as default** | Stream verified blocks and non-factual progress instead |
+| Automatic PostgreSQL tenant partitioning | **Defer pending query plans** | Avoid premature partition explosion and migration complexity |
+| Claimed OCR price tiers and fixed 67–87% savings | **Do not assume** | Region/model availability, rate cards and corpus distribution must be measured |
+| Guaranteed 80–90% prompt-cache hits | **Do not assume** | Optimize stable prompts only if evidence freshness and relevance are retained |
+
+This disposition is an engineering decision informed by the supplied 19-page review; it does not claim that its numerical benchmarks or deployment observations have been reproduced in this repository.
 
 ## 21. Definition of done for the architecture
 
@@ -750,9 +912,13 @@ A working platform is acceptable only when:
 - The same content can be reprocessed and reindexed without losing immutable originals, previous citations or audit history.
 - A query can return an original source image, structured table or textual answer with precise clickable evidence.
 - Markdown and text citations open the **exact original line/span** even after normalization and multilingual indexing.
-- A table computation yields exact values from validated cells and shows its formula and sources.
+- A table computation yields exact values from validated cells, inherited units and scale, and shows its formula, exclusions and sources.
 - Users can never retrieve or render documents they lack permission to access, including through caches and stale indexes.
 - Uncertain extraction or insufficient evidence produces explicit diagnostics/abstention rather than plausible but unsupported assertions.
 - Reliability, security and retrieval quality gates are automated and measured.
+- Cloud OCR requests respect verified deployment page/byte limits, resume from page checkpoints, and preserve global source geometry across batches.
+- Message redelivery after a worker crash can resolve claim-check artifacts without embedding large document payloads in broker messages.
+- Query-visible answer blocks are citation-validated before display, while progress can stream immediately.
+- Search is pinned to a validated active document/index generation and retains in-flight source integrity through cutover.
 
 **Implementation order:** establish immutable storage, the CDM, provenance/locator fidelity, and extraction quality **before** optimizing the conversational UI. This is the foundation that makes future multimodal models and formats safely replaceable.
