@@ -1356,7 +1356,7 @@ Role templates are immutable versioned defaults; tenant-defined custom roles are
 **Legend:** Y = built-in role template grants action *subject to resource scope and policy*; - = no default grant. The matrix is a suggested initial configuration to test and refine, **not an automatic universal tenant-owner bypass**.
 
 | Action | TO | TA | SA | BA | KA | CO | RV | AN | RE | AU |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Manage tenant settings | Y | Y | - | - | - | - | - | - | - | - |
 | Invite/remove members | Y | Y | - | - | - | - | - | - | - | - |
 | Manage tenant role assignments | Y | Y | Y | - | - | - | - | - | - | - |
@@ -1730,7 +1730,9 @@ Aggregate strictly within authorized tenants/workspaces/collections, only from e
 Provide time-series by outcome/collection, top privacy-safe recurring topics, abstention rate, source-quality gaps, reviewer queue lag, stale citation count, extraction coverage, feedback and recommended human actions. Measure trend stability, cluster precision and false "missing document" accusations on a labeled corpus. Link dashboards to *authorized* review or upload workflows; not to anonymous background crawler actions.
 ## 32. Definition of done for the architecture
 
-A working platform is acceptable only when (in addition to the established v1.0–v1.3 content, security, provenance and tenancy guarantees):
+### 32.1 v1.4 evidence governance, integration and redaction gates
+
+The following v1.4 capabilities must pass security and correctness tests before they are declared implemented:
 
 - When a new READY document version modifies cited evidence, saved answers and immutable Evidence Brief revisions receive an auditable freshness assessment without corrupting original source citations. Confirmed conflicts require applicable authority/effective-date evidence and review, not mere lexical differences.
 - Users can build and publish immutable Evidence Briefs from verified source-backed blocks; an independent offline verifier rejects tampering and labels missing/restricted source artifacts as not fully verifiable.
@@ -1739,7 +1741,7 @@ A working platform is acceptable only when (in addition to the established v1.0�
 - Unauthorized users never receive protected content through raw PDF layers, raster crops, metadata, caches, embeddings/search snippets, model context, exports, citations or agent-tool endpoints. Uncertain sanitization defaults to denial.
 - Knowledge-health metrics distinguish absent evidence from OCR, retrieval, authorization and query ambiguity; tenant/private prompt content cannot be reconstructed from aggregate dashboards.
 
-A working platform is acceptable only when
+### 32.2 v1.3 distribution, identity and SaaS gates
 
 - A self-hosted instance boots, configures its built-in identity, creates its first tenant and performs normal RAG operations without a vendor SaaS control-plane dependency.
 - SaaS and self-hosted builds use the same authorization contracts and domain model; only documented deployment capabilities and operator services differ.
@@ -1749,7 +1751,7 @@ A working platform is acceptable only when
 - SaaS usage plans/quotas and tenant suspension never elevate RBAC or destroy retained evidence without an audited policy-controlled workflow.
 - Enterprise federation extensions (SAML/AD, SCIM, extra IdPs), stronger isolation and customer-managed AI provider features are considered done **only when implemented and tested**, rather than assumed from v1.3 design.
 
-A working platform is acceptable only when:
+### 32.3 v1.0–v1.2 evidence-centric RAG baseline gates
 
 - A PDF, HTML page, image, Markdown file and plain-text file can each be ingested with original bytes retained, observable processing status, typed elements, and supported source locators.
 - The same content can be reprocessed and reindexed without losing immutable originals, previous citations or audit history.
