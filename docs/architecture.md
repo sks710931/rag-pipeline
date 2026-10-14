@@ -1,11 +1,23 @@
 # Enterprise Multimodal RAG Platform — Architecture
 
-> **Status:** Proposed architecture (implementation specification, not a claim of completed functionality)  
+> **Status:** **FROZEN ARCHITECTURE BASELINE — v1.5**, approved as the implementation reference (design specification; no claim of completed code or production certification)  
 > **Version:** 1.5 — adds pluggable Master Encryption Key (MEK) lifecycle and optional TPM-backed on-premises key protection; all prior governance, SaaS, identity and RAG decisions remain in force  
 > **Date:** 2026-10-15  
+> **Architecture freeze date:** 2026-10-15  
 > **Revision basis:** v1.4 plus encrypted Integration Setup Center wizard secrets, an explicit DEK/KEK/MEK lifecycle, optional Windows/Linux TPM2 key protection, multi-node/SaaS KMS, tested recovery and rotation. Prior requirements and the open-source license decision remain unchanged.  
 > **Repository:** sks710931/rag-pipeline  
 > **Target:** Open-source core; self-hosted/on-premises and managed multi-tenant SaaS distributions; approximately 10,000 initial documents per sizing scenario, multilingual, cloud AI by default (customer-configurable provider policies).
+
+## Architecture freeze and change-control policy (v1.5)
+
+**Baseline decision:** Version **1.5 is frozen for implementation.** Sections 1–33, their technical invariants, selected provider boundaries, distribution model, security requirements, and accepted/deferred ADR decisions collectively form the approved design baseline. This freeze is **not** a source-code freeze, a claim that the design is already implemented, or a guarantee that production readiness tests have passed.
+
+- **Build against the baseline:** Use this document and [Slicing strategy.md](Slicing%20strategy.md) when implementing S0 onward. Implementation details and delivery sequencing may evolve in supporting documents and code provided they preserve v1.5 invariants.
+- **No unreviewed scope growth:** New architecture features, changed security/trust boundaries, replacement technologies, or weakened correctness/authorization requirements must be proposed through a versioned ADR/change request with impact, alternatives, acceptance tests, migration implications and rollback. An approved substantive change creates a new architecture revision (starting with **v1.6**), never a silent rewrite of v1.5.
+- **Fixing design defects:** Security/correctness issues uncovered in implementation are not ignored because of the freeze. Record the problem, severity and decision in an issue/ADR; implement urgent safe remediation as needed, and update the next architecture revision. Only non-semantic errata (typos, formatting and broken links) may be corrected without a new architecture version, with clear commit history.
+- **Protect the historical reference:** The Git commit representing this freeze is the canonical **immutable v1.5 reference**. Future edits to `main` do not alter that historical commit. The branch remains open for implementation and supporting docs; no Git repository branch-protection or release-tag guarantee is implied by this textual freeze.
+- **Outstanding decisions remain outstanding:** Open-source license/commercialization, implementation-time provider availability, formal threat-model details, deployment-specific SLO/RPO/RTO, release operations and tested disaster recovery still require resolution in their respective workflows. They are not implicitly approved by freezing this design.
+- **Acceptance remains empirical:** Architecture quality and production readiness must be demonstrated by the smoke, integration, adversarial security, source-provenance, tenant isolation, MEK recovery, accessibility and release gates defined here and in the slicing strategy.
 
 ## 1. Purpose and architectural principles
 
