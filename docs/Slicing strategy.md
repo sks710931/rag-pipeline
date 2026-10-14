@@ -438,12 +438,12 @@ This section is a **delivery contract** for the full lifecycle specified in [arc
 
 | Slice | User-visible outcome | Server capability | Gate |
 | --- | --- | --- | --- |
-| S0.4a — Select protector | First owner sees supported TPM / Vault / secure software choices and limitations | \`IKeyProtectionProvider\` capabilities, OS/TPM detection, verified deployment mode | Never claim TPM available until actual provider capability check |
+| S0.4a — Select protector | First owner chooses tested unattended software-root, Vault/KMS or deliberate manual unlock; future TPM shown as unsupported until agent is present | \`IKeyProtectionProvider\` capabilities, verified deployment mode and supported adapter readiness | No unimplemented TPM choice can be activated |
 | S0.4b — Initialize envelope | Owner starts protected key management without copying plaintext keys | Key version/reference, secure random wrapping material, tenant-aware policies, staged durable records | All secret data is authenticated and stored encrypted; retry is idempotent |
 | S0.4c — Recovery kit | Owner can securely export recovery envelope to independent storage and learn restore steps | Separate encrypted recovery envelope, safe key derivation, key metadata, offline verifier | No plaintext MEK or recovery passphrase in logs, database dump or support bundle |
 | S0.4d — Verify & activate | Real test succeeds; Setup Center shows “Protected / Ready” | Wrap/unwrap + simulated recovery check, ACTIVE state, audited activation | First integration-secret POST still denied until ACTIVE |
 | S0.4e — Key management settings | Owner can inspect non-secret protector status and initiate rotation or recovery | Least privilege, key versions, journaled rewrap and recovery CLI | Rotation cannot make active integration secret unrecoverable |
-| S0.5 — Provider integration | Email/OCR/LLM/OIDC credentials saved and tested one by one | Per-secret fresh DEK, AES-GCM with tenant/purpose AAD, wrapped DEK metadata, server-only plaintext | No plaintext credential/key returned to browser or exposed in logs |
+| S0.5 — Setup Center framework | Real resumable provider registry, profile/health/security readiness and reusable secure provider form pattern; **no unused AI adapter** | Encryption contract, feature/capability activation, truthful unavailable states; concrete provider APIs ship S1/S4/S5/S6/S7 | No false Connected state, dead Test button or secret/plaintext leak |
 
 **Authority:** Deployment operator can set the root-protection policy; tenant-admin authority is constrained to permitted tenant provider secrets. SaaS operator role does not by itself allow decrypting tenant secrets. Local login, restoring account access and reading installation status never depend on SMTP/Foundry/TPM presence.
 
@@ -451,7 +451,7 @@ This section is a **delivery contract** for the full lifecycle specified in [arc
 
 Recommended UX:
 
-1. **Detect:** “We found TPM 2.0 on this machine”, “External vault configured” or “No hardware-backed protector detected”. Detection is advisory until a real capability test passes. Show known hardware/VM migration limitations.
+1. **Detect supported protection:** “Unattended software-root ready”, “External vault configured” or “Manual unlock available”. An OS TPM device may be noted as hardware-only information, but **TPM-backed key protection is unavailable until its optional agent ships and passes capability checks**; show host migration limitations transparently.
 2. **Choose an implemented protector:** **Unattended software-root** (self-hosted), **external Vault/KMS** (hosted) or **manual unlock** (opt-in). TPM2 host protection is shown as future optional on-prem capability until its real S14 adapter is supported. **Never** include an “unencrypted” choice.
 3. **Generate:** For unattended self-hosted use, run the privileged operator bootstrap CLI to generate a high-entropy root in a persistent restricted host secret mount **outside DB/container images/backups**; UI provisions wrapped tenant keys from that material. Alternatively select intentional manual unlock or approved KMS. Show only nonsecret key version and state.
 4. **Protect recovery:** Offer a one-time **encrypted recovery kit download** or supported enterprise key escrow. Require independent high-entropy recovery secret/organizational secret-management control, a clear warning against saving it beside database backups, and acknowledgment of recovery limitations.
