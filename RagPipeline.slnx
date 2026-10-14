@@ -1,0 +1,15 @@
+<Solution>
+  <Folder Name="/apps/">
+    <Project Path="apps/api/RagPipeline.Api/RagPipeline.Api.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/BuildingBlocks/RagPipeline.BuildingBlocks/RagPipeline.BuildingBlocks.csproj" />
+    <Project Path="src/DeploymentCapabilities/RagPipeline.DeploymentCapabilities/RagPipeline.DeploymentCapabilities.csproj" />
+    <Project Path="src/IdentityAccess/RagPipeline.IdentityAccess/RagPipeline.IdentityAccess.csproj" />
+    <Project Path="src/TenantManagement/RagPipeline.TenantManagement/RagPipeline.TenantManagement.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Integration/RagPipeline.IntegrationTests/RagPipeline.IntegrationTests.csproj" />
+    <Project Path="tests/Unit/RagPipeline.UnitTests/RagPipeline.UnitTests.csproj" />
+  </Folder>
+</Solution>
