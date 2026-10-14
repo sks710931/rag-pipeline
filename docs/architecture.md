@@ -1958,7 +1958,7 @@ Protect bootstrap token from ordinary container-startup logs; trust forwarded he
 
 ## 34. Definition of done for the architecture
 
-### 34.1 v1.6 cross-runtime delivery gates
+### 34.0 v1.6 cross-runtime delivery gates
 
 - Only .NET owns authoritative CDM/lease/READY PostgreSQL writes and mediates job/epoch/purpose-scoped trusted Python provider credential access.
 - Software-root MEK survives restarts or enters deliberate LOCKED recovery without resetting Superadmin bootstrap; physical TPM agents remain optional.
