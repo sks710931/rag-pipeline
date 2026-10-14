@@ -1,9 +1,9 @@
 # Vertical Slicing Strategy — Production-Ready UX from Slice 0
 
 > **Status:** Implementation strategy / proposed delivery plan, not a claim of implemented functionality
-> **Version:** 1.0
+> **Version:** 1.1 — includes recoverable Master Encryption Key protection and optional TPM-backed Slice 0 onboarding
 > **Date:** 2026-10-15
-> **Architecture baseline:** [architecture.md](architecture.md), v1.4 (32 major sections)
+> **Architecture baseline:** [architecture.md](architecture.md), v1.5 (33 major sections), especially §32 MEK lifecycle
 > **Product:** Open-source self-hosted / enterprise on-premises / managed multi-tenant SaaS
 > **Stack:** ASP.NET Core 10 + React / strict TypeScript + Tailwind; PostgreSQL; separate Python document workers; pluggable AI providers
 > **Primary architectural style:** Modular monolith + feature-oriented vertical slices, with domain-driven boundaries and a small shared foundation
@@ -23,6 +23,7 @@
 7. **Production UX is continuous:** Every slice has a real entry point, understandable state, success path, failure path, keyboard/mobile support, accessible feedback, tenant/role checks, tracing and release tests. UI is never scheduled as a separate horizontal “polishing phase”.
 8. **Evidence integrity first:** The prior architecture's version pinning, CDM provenance, immutable originals, review states, claim-check, fencing, redaction policy and verified answer requirements survive every simplification.
 9. **Feature claims are truthful:** If an integration/model feature is absent, show “Not configured” or “Unavailable” and guide an authorized owner to setup; don't imply that a click performed OCR or AI search when it did not.
+10. **Key protection before secret storage:** Integration credentials are encrypted with per-secret authenticated DEKs under a versioned tenant/deployment wrapping hierarchy; the first wizard secret cannot be saved before its configured protector is ACTIVE. Hardware-bound TPM protection is optional, but recovery and no-insecure-downgrade rules are mandatory for a production self-hosted experience.
 
 ## 2. What “production-ready UX from Slice 0” means
 
@@ -139,12 +140,15 @@ flowchart TD
     G["Seal bootstrap permanently"]
     H["Local sign-in"]
     I["Authenticated product shell"]
+    P["Protect installation: TPM / Vault / software"]
+    R["Verify recovery or approved external escrow"]
+    Q["Activate encrypted secret store"]
     J["Guided Integration Setup Center"]
     K["Normal dashboard"]
     A --> B --> C
     C -->|UNINITIALIZED| D --> E --> F --> G --> H
     C -->|SEALED| H
-    H --> I --> J --> K
+    H --> I --> P --> R --> Q --> J --> K
 ~~~
 
 When initialized but a dependency is down, show an actionable **Service Unavailable / Maintenance** state, not a false fresh-install screen. When no database or incompatible migrations exist, the app must not offer to create an owner until the authoritative bootstrap state is safely readable.
@@ -158,6 +162,8 @@ A successful bootstrap must create:
 4. Deployment initialization state marked **SEALED** and a consumed one-time bootstrap credential, in the same consistent initialization transaction.
 
 **Important security boundary:** Deployment Superadmin means operational administration of this installation. It is **not** an implicit right to bypass tenant/document ACLs. SaaS operator accounts cannot automatically read customer content.
+
+**Master-key timing:** Initial user/tenant creation and permanent SEALED bootstrap **do not** depend on TPM availability. After the first owner logs in, initialize an appropriate protector before any Integration Setup Center credential is stored. A failed key-protector initialization never reopens the web owner-creation route. The user may navigate the limited local dashboard/admin-recovery screens while secrets remain locked.
 
 ### 4.2 One-time guarantee must be enforced on the server
 
@@ -197,17 +203,19 @@ The SaaS deployment platform operator is initialized privately by CLI/IaC and a 
 
 **S0.3 — Local authentication:** login/logout/session management, user profile/password change, authorization policies, initial tenant context and credible empty dashboard.
 
-**S0.4 — Guided Integration Setup Center:** durable wizard progress, provider credentials encrypted/server-side, authorized test connection and provider capability result, save/skip/revisit.
+**S0.4 — Protect Installation and Recovery:** select/detect a compatible key protector (optional TPM2 / Vault/KMS / explicit recovery-enabled software); generate versioned wrapping material, securely export and verify an independent recovery envelope or approved enterprise escrow, test wrap/unwrap and mark secret storage ACTIVE. Error/recovery UI is usable without provider credentials.
 
-**S0.5 — Hardening:** e2e tests from fresh database, failure/recovery, keyboard/mobile/accessibility, secret handling, backup/restore smoke test, installer/readme/setup guide, critical telemetry.
+**S0.5 — Guided Integration Setup Center:** after S0.4, provide durable wizard progress and one-provider-at-a-time encrypted credential entry, authorized test connection, provider capability results, save/skip/revisit and redacted failure diagnostics.
 
-**S0 cannot be marked complete until all five increments integrate end-to-end.** Do not defer UX polish, integration-state errors or security tests to a later design sprint.
+**S0.6 — Hardening:** e2e tests from fresh database, missing TPM, corrupt key metadata, key/credential rotation, cross-host recovery, failure/backup/restore, keyboard/mobile/accessibility, secret exposure checks, installer/readme/setup guide and critical telemetry.
+
+**S0 cannot be marked complete until all six increments integrate end-to-end.** Do not defer UX polish, integration-state errors or security tests to a later design sprint.
 
 ## 5. Guided third-party integration onboarding
 
 ### 5.1 Experience after the first successful Superadmin login
 
-**Show one integration at a time.** Start with a brief checklist/stepper: “Complete the setup to enable document intelligence.” Each step has purpose, data-sharing explanation, scope, fields, **Test connection**, Save, Back, and Skip/Do later where safe. Show the present status and next enabled capability. Configuration is **persisted securely** and may be resumed across sessions.
+**Show one integration at a time after key protection is active.** Start with a brief checklist/stepper: “Complete the setup to enable document intelligence.” Each step has purpose, data-sharing explanation, scope, fields, **Test connection**, Save, Back, and Skip/Do later where safe. Show the present status and next enabled capability. Configuration is **persisted securely** and may be resumed across sessions.
 
 Suggested setup journey for an initial self-hosted installation:
 
@@ -216,6 +224,7 @@ Suggested setup journey for an initial self-hosted installation:
 | 0 | Deployment health (PostgreSQL, object store, queue, Qdrant connectivity, migrations) | **Preflight requirement** for installed components | Actionable health; infrastructure secrets are typically injected before the web wizard |
 | 1 | Installation profile: tenant name, display name, timezone, logo (optional) | Core identity / minimum tenant name | Recognizable working tenant and profile |
 | 2 | Account protection: local recovery and MFA setup | Strongly recommended; policy may require | Admin account recovery and verified security controls |
+| 2a | **Protect your installation: MEK/key-protector setup and independent recovery** | **Mandatory before any third-party credential can be persisted** | Choose TPM / Vault / software path, store encrypted key envelopes, verify recovery, mark protector ACTIVE |
 | 3 | Email provider (SMTP or supported email API) | Optional in a single-user local install | Invitations, password recovery by email, notification delivery |
 | 4 | Primary document OCR: Mistral in Microsoft Foundry | Required **only for cloud OCR-required files/features** | Test endpoint, credentials, deployment, region, supported file/page limits and policy |
 | 5 | Azure Document Intelligence fallback | Optional specialist | Table/forms/geometry fallback with independent endpoint/version |
@@ -227,7 +236,7 @@ Suggested setup journey for an initial self-hosted installation:
 
 **Provider steps are dynamic and capability-gated.** An OSS deployment configured for local embeddings/LLMs should present those adapters instead of forcibly demanding Azure. OIDC setup is optional; local bootstrap must remain available as a safe recovery method before SSO-only enforcement can be enabled. A normal employee signing in must **not** see platform integration wizard steps; only explicitly authorized deployment/tenant administrators can view or change their scope's provider configuration.
 
-No step may automatically upload customer documents to a cloud AI provider. Explain data residency/egress and require explicit policy approval before enabling provider-backed processing. Do not bundle third-party API keys into distribution images or logs.
+No step may automatically upload customer documents to a cloud AI provider. Explain data residency/egress and require explicit policy approval before enabling provider-backed processing. **No integration configuration may persist new secret material while key protection is NOT_INITIALIZED, DEGRADED or RECOVERY_REQUIRED.** Settings and admin login remain available in limited mode to resolve the condition. Do not bundle third-party API keys into distribution images or logs.
 
 ### 5.2 Integration state machine and failure UX
 
@@ -250,7 +259,9 @@ Wizard completion is persisted per deployment/tenant and administrator where app
 
 | Working capability | Needed integration |
 | --- | --- |
-| Create owner, login, tenant management, role administration | Local database and identity; **no external IdP, SMTP or cloud model required** |
+| Create owner, login, tenant management, role administration | Local database and identity; **no external IdP, SMTP, TPM or cloud model required** |
+| Save wizard secret / OAuth client secret / SMTP password | ACTIVE key protector with per-secret AES-GCM encryption, tenant-scoped wrapping and verified recovery policy |
+| Use previously saved third-party integration | Available authorized key unwrap; otherwise explicit locked/unavailable failure |
 | Upload and preserve originals | Operational object storage, database and ingestion workflow |
 | Parse TXT/MD/native PDF without OCR | Local parser and storage; **no paid cloud OCR** |
 | Scanned PDF extraction | Approved OCR provider (or explicitly implemented local alternative) |
@@ -268,7 +279,7 @@ The table below is the **planned order**, adjusted based on dependencies and evi
 
 | Slice | What a user can really do at completion | Main modules / dependencies | Architecture phase |
 | --- | --- | --- | --- |
-| **S0** Secure installation & UX shell | Securely create first Superadmin **once**, log in, see real system status, follow setup wizard and manage own profile | IdentityAccess, TenantManagement, DeploymentCapabilities; local infrastructure | I1 |
+| **S0** Secure installation & UX shell | Securely create first Superadmin **once**, log in, protect and recover wizard keys, configure integrations one by one, see real system status and manage profile | IdentityAccess, TenantManagement, DeploymentCapabilities, SecretManagement; local infrastructure | I1 |
 | **S1** Tenancy, invitations, scoped RBAC | Create/switch authorized tenants, set up workspaces/collections, assign roles, prove denied paths; enterprise OIDC baseline as scoped capability | IdentityAccess, TenantManagement, access policy | I1 |
 | **S2** Document registration and upload | Upload file, see progress/status/errors, retrieve original securely; immutable version and job event | DocumentManagement, storage, outbox, lease fencing | I1 |
 | **S3** Native document evidence | Upload TXT/Markdown and suitable native PDF, inspect original versus parsed text/structure with exact line/page locators | Python parsers, CDM, EvidenceCatalog | I2 |
@@ -289,7 +300,7 @@ The table below is the **planned order**, adjusted based on dependencies and evi
 
 ### Slice S0 detailed acceptance
 
-Given a fresh self-hosted DB, an operator installs the stack and obtains the protected bootstrap proof. The app shows the real one-time setup page; valid username and password plus proof atomically create the deployment owner and first tenant. A second attempt from another browser cannot create another owner. On initial sign-in the owner sees the actual application with setup progress and can configure one provider at a time. Leaving setup incomplete never breaks login, settings or logout. A restart or restore never exposes the bootstrap page again for that initialized DB. All flows pass responsive, keyboard, authorization, trace, browser and recovery tests.
+Given a fresh self-hosted DB, an operator installs the stack and obtains the protected bootstrap proof. The app shows the real one-time setup page; valid username and password plus proof atomically create the deployment owner and first tenant. A second attempt from another browser cannot create another owner. On initial sign-in the owner sees the actual application with setup progress, chooses a recovery-capable secret protector, verifies recovery, and only then can save each provider credential securely one at a time. Leaving setup incomplete never breaks login, settings or logout. A restart or restore never exposes the bootstrap page again for that initialized DB. All flows pass responsive, keyboard, authorization, trace, browser and recovery tests.
 
 ### Slice S1/S2 user experience example
 
@@ -327,7 +338,7 @@ A UI-only slice without functional backend is **not** complete. A backend-only f
 | Multi-tenancy | At least two tenants in integration tests; deny cross-tenant requests, joins, asset URLs, caches, search and jobs |
 | RBAC | Deny-by-default permission catalog; scope inherited properly; SA/operator cannot automatically access private content |
 | UX | Responsive, keyboard-navigable, accessible labels/errors, honest empty/error/loading states and no dead-end controls |
-| Data protection | Secrets redacted in API/log/UI, classification and provider egress enforced before cloud calls |
+| Data protection | AES-GCM encrypted provider secret versions, ACTIVE key-protector and recovery readiness required before secret saves; no plaintext key material in API/log/UI; classification and provider egress enforced before cloud calls |
 | Resilience | Idempotency, retry, timeouts, no stale fencing commits, object/queue failure recovery as relevant |
 | Observability | Structured correlation IDs, health, trace, audit events and diagnostic identifiers with no sensitive data leakage |
 | Performance | Publish measured p50/p95 and real device/browser constraints; avoid unverified speed guarantees |
@@ -350,6 +361,10 @@ A UI-only slice without functional backend is **not** complete. A backend-only f
 8. Wrong tenant membership, role escalation, spoofed tenantId, tenant switch across browser tabs, absent MFA when required and stolen/replayed cookie handling.
 9. Provider setup with bad credentials, wrong endpoint/audience, mismatched model, missing region, slow 429, denied egress, skipped step and credential rotation.
 10. Settings refresh, browser back, abandoned wizard and ordinary non-admin login: no sensitive integration secrets or repetitive blocking onboarding.
+11. S0 key protector absent/unsupported, TPM cleared, firmware/PCR change, wrong recovery envelope, corrupt wrapped DEK, swapped tenant/secret ID and failed AEAD tag: decrypt fails closed with no plaintext/cross-tenant leak.
+12. Rotate a wrapping key with concurrent wizard save or process crash: rewrap journal allows resume; active ciphertext remains readable by the authorized key version; never retire the old key prematurely.
+13. Hardware replacement rehearsal: restore database, protected recovery envelope and permitted file storage on a replacement host; rewrap under new protector, recover integration test without revealing existing secrets in UI; bootstrap stays SEALED.
+14. SaaS Vault/KMS outage and multi-node access, tenant mismatched key reference, credential rotation, Docker host TPM device denial and secret leakage through logs/traces/backups must be tested.
 
 ### 8.2 User experience review evidence
 
@@ -359,7 +374,7 @@ For each PR: link the feature's acceptance scenarios, passing Playwright tests, 
 
 Use a common **IIntegrationProvider** or domain-specific adapter contract for capabilities, connection test, configuration validation, activation/deactivation, secret reference and diagnostic status. The domain-specific contracts from architecture.md remain the authority for OCR/embedding/LLM; do not collapse their incompatible provider APIs into a single pretend-universal model.
 
-For each provider build a complete vertical slice:
+For each provider build a complete vertical slice **on top of an ACTIVE SecretManagement protector** (§13):
 
 1. Authorized provider tile and purpose-specific integration form.
 2. API validation, tenant/deployment scoping and egress/cost disclosure.
@@ -375,7 +390,7 @@ Start with common built-in local authentication. Add generic enterprise OIDC and
 
 ## 10. Deployment readiness and release process
 
-- **OSS self-hosted:** Tagged OCI builds, Compose installation path, install/setup docs, no platform-SaaS handshake, tested local first-run/bootstrap, repeatable migrations, storage backup/restore and upgrade rollback. License still awaits owner decision in architecture.md §21.2.
+- **OSS self-hosted:** Tagged OCI builds, Compose installation path, install/setup docs, no platform-SaaS handshake, tested local first-run/bootstrap, recoverable secrets protector, repeatable migrations, key metadata/secret-envelope and storage backup/restore and upgrade rollback. License still awaits owner decision in architecture.md §21.2.
 - **Enterprise on-prem:** Reverse proxy/TLS, offline capability boundaries, optional private provider endpoints, SSO if configured, operator recovery, explicit outgoing calls and secrets lifecycle.
 - **SaaS:** Privately initialized operator plane, invitation/tenant creation rather than web platform bootstrap, multi-tenant RLS and policy enforcement, rate/usage budgets and tenant-aware telemetry. Dedicated placement remains a later validated option.
 - **Release channels:** dev/preview/stable, forward-compatible event/CDM schemas, migration verification and controlled rollback. Feature flags cannot override authorization.
@@ -389,6 +404,11 @@ Start with common built-in local authentication. Add generic enterprise OIDC and
 | Slice 0 UX | **Accepted:** polished product shell, secure first-run bootstrap/login, first-owner flow and guided Setup Center |
 | Initial role | **Accepted:** self-hosted initial user is deployment Superadmin **and** initial tenant owner, with separate scopes |
 | Bootstrap exposure | **Accepted:** single-use operator proof + authoritative SEALED gate; no public anonymous SaaS Superadmin registration |
+| MEK hierarchy | **Accepted:** per-secret DEKs, AES-256-GCM, purpose/tenant-bound authenticated context, versioned KEK and key-protector contract; separate from login cookie key ring |
+| TPM policy | **Accepted:** optional self-hosted/on-prem security improvement, not sole recovery source or mandatory default; a signed-only TPM ECC identity key is not an encryption key |
+| Self-hosted recovery | **Accepted:** independently protected recovery envelope or approved external escrow before recording recovery-ready setup; no raw MEK/keys next to database backup |
+| SaaS/multi-node protector | **Accepted:** Azure Key Vault / approved KMS with workload identities; no reliance on single physical TPM |
+| Host TPM Docker access | **Accepted:** optional restricted host key agent/IPC; do not give entire container unrestricted TPM device access |
 | Integrations | **Accepted:** progressive one-at-a-time wizard, resumable; capability-dependent and optional steps skippable |
 | Normal login | **Accepted:** no repeatedly forced wizard; only authorized admins see contextual incomplete-setup warnings |
 | OAuth/SSO | **Accepted:** OIDC with secure BFF sessions; local identity first; customer tenant SSO configured later per policy |
@@ -400,10 +420,93 @@ Start with common built-in local authentication. Add generic enterprise OIDC and
 
 ## 12. Immediate engineering sequence
 
-Start by implementing **S0.1 → S0.2 → S0.3 → S0.4 → S0.5**, merging only cohesive, testable increments. The first publicly demonstrated workflow should be:
+Start by implementing **S0.1 → S0.2 → S0.3 → S0.4 → S0.5 → S0.6**, merging only cohesive, testable increments. The first publicly demonstrated workflow should be:
 
-**Install → secure one-time Superadmin creation → login → configure (or skip) integrations one by one → reach a real dashboard and Settings → logout/relogin → no bootstrap or repeated blocking wizard.**
+**Install → secure one-time Superadmin creation → login → choose TPM/Vault/recovery-enabled software protection → verify encrypted recovery → configure (or skip) integrations one by one → reach a real dashboard and Settings → logout/relogin → no bootstrap or repeated blocking wizard.**
 
 Then implement **S1 tenant/roles** and **S2 immutable upload** before a complex OCR pipeline. Every later slice preserves the same production-ready UX and security discipline.
 
 **Do not trade away first-run security to improve apparent onboarding convenience.** A remotely claimable initial Superadmin account or persistent setup route would be a serious security flaw in a distributed open-source and hosted product.
+
+## 13. Slice 0 Master Encryption Key (MEK) / TPM implementation strategy
+
+This section is a **delivery contract** for the full lifecycle specified in [architecture.md §32](architecture.md). It is part of **S0.4** and underpins all credential-collecting integrations in S0.5. Key-protection UX must meet the same visual quality, accessibility, testing and security gates as the login and setup screens.
+
+### 13.1 Vertical slice boundaries and dependencies
+
+| Slice | User-visible outcome | Server capability | Gate |
+| --- | --- | --- | --- |
+| S0.4a — Select protector | First owner sees supported TPM / Vault / secure software choices and limitations | \`IKeyProtectionProvider\` capabilities, OS/TPM detection, verified deployment mode | Never claim TPM available until actual provider capability check |
+| S0.4b — Initialize envelope | Owner starts protected key management without copying plaintext keys | Key version/reference, secure random wrapping material, tenant-aware policies, staged durable records | All secret data is authenticated and stored encrypted; retry is idempotent |
+| S0.4c — Recovery kit | Owner can securely export recovery envelope to independent storage and learn restore steps | Separate encrypted recovery envelope, safe key derivation, key metadata, offline verifier | No plaintext MEK or recovery passphrase in logs, database dump or support bundle |
+| S0.4d — Verify & activate | Real test succeeds; Setup Center shows “Protected / Ready” | Wrap/unwrap + simulated recovery check, ACTIVE state, audited activation | First integration-secret POST still denied until ACTIVE |
+| S0.4e — Key management settings | Owner can inspect non-secret protector status and initiate rotation or recovery | Least privilege, key versions, journaled rewrap and recovery CLI | Rotation cannot make active integration secret unrecoverable |
+| S0.5 — Provider integration | Email/OCR/LLM/OIDC credentials saved and tested one by one | Per-secret fresh DEK, AES-GCM with tenant/purpose AAD, wrapped DEK metadata, server-only plaintext | No plaintext credential/key returned to browser or exposed in logs |
+
+**Authority:** Deployment operator can set the root-protection policy; tenant-admin authority is constrained to permitted tenant provider secrets. SaaS operator role does not by itself allow decrypting tenant secrets. Local login, restoring account access and reading installation status never depend on SMTP/Foundry/TPM presence.
+
+### 13.2 First-login "Protect your installation" screen
+
+Recommended UX:
+
+1. **Detect:** “We found TPM 2.0 on this machine”, “External vault configured” or “No hardware-backed protector detected”. Detection is advisory until a real capability test passes. Show known hardware/VM migration limitations.
+2. **Choose:** **Use hardware-backed protection** (recommended when supported), **Use external Vault/KMS**, or **Use recovery-enabled software protection** (explicit trade-off). **Never** include an “unencrypted” choice.
+3. **Generate:** Server generates random wrapping material or configures approved KMS keys; show only a public/key-version identifier and protection state.
+4. **Protect recovery:** Offer a one-time **encrypted recovery kit download** or supported enterprise key escrow. Require independent high-entropy recovery secret/organizational secret-management control, a clear warning against saving it beside database backups, and acknowledgment of recovery limitations.
+5. **Verify:** Run a safe cryptographic self-test (including an independently protected recovery envelope for recoverable installations). A first-run self-test is **not** a substitute for a real replacement-hardware DR drill, which belongs in the release gate.
+6. **Activate:** Persist ACTIVE state and move to the normal step-by-step third-party provider wizard. Failed/abandoned setup remains RECOVERY_PENDING or LOCKED, never a plaintext fallback.
+7. **Revisit:** Settings > Security > Encryption Keys displays non-secret status, protector type, key ID/version, recovery readiness, audit trail, “Rotate wrapping key” and authorized recovery instructions. Do not print encryption keys or recovery passphrases.
+
+The screen supports keyboard navigation, narrow widths, missing TPM, no outbound vault access, invalid recovery envelope, elapsed activation and readable remediation. Key-related failure never redirects to “Create first Superadmin”; bootstrap remains SEALED.
+
+### 13.3 Protector implementation and Docker placement
+
+~~~text
+S0 React Setup Center
+   |
+   v
+ASP.NET Core Secret Management API (tenant + policy + session checks)
+   |
+   +-- ISecretEncryptionService: per-secret AES-256-GCM DEK
+   |       |
+   |       +-- immutable ciphertext record + wrapped DEK + key metadata
+   |
+   +-- IKeyProtectionProvider
+           +-- Azure Key Vault/KMS (SaaS / shared multi-node)
+           +-- External Vault/KMS (on-prem multi-node)
+           +-- TPM Host Agent (Windows CNG / Linux TPM2-TSS)
+           +-- Recovery-enabled software protector (single host alternative)
+~~~
+
+TPM keys require **appropriate seal/wrap operations**; do not attempt to encrypt with a TPM **ECDSA signing-only** key. A host-side key agent must authenticate the allowed calling workload and restrict key IDs, operations and namespaces. Exposing a general-purpose \`/dev/tpm0\` interface to the application container or logging unseal output is not an acceptable default.
+
+A SaaS deployment should normally use managed identity + shared-access KMS and may use separate tenant KEK policies; tenant isolation includes vault authorization and secret-level purpose checks. A single hardware TPM must not become the SaaS-wide availability dependency.
+
+### 13.4 Faults, recovery and activation truthfulness
+
+| Condition | User experience | Enforcement |
+| --- | --- | --- |
+| TPM unavailable | “Hardware protection not available”; offer explicit safe alternative | No auto-fallback to plaintext or silent change of protector |
+| TPM cleared / host replaced | “Encrypted credentials locked; recovery required” | Disable secret-dependent jobs; keep local admin login |
+| Vault/KMS outage | “Temporarily unavailable, retry later” | Fail closed, rate-limit retries, no insecure cached persistent secret |
+| No recovery envelope for recoverable on-prem profile | “Recovery protection incomplete” | Do not claim installation protected/recoverable; block S0 secret saves under this policy |
+| Recovery envelope invalid | Clear safe error without key details | Do not change key lineage or attempt a new Superadmin bootstrap |
+| KEK rotation incomplete | Show journaled progress / retry | Old working envelope remains until all records verified |
+| Provider credential revoked at Azure/SMTP/IdP | “Connection invalid; update provider credential” | Separate provider secret rotation from MEK/DEK rewrap |
+| Tenant mismatch / forged wrapped-key metadata | Generic forbidden/integrity error | Unwrap authorization checks + authenticated encryption context |
+
+### 13.5 Mandatory automated and manual tests
+
+- Concurrent bootstrap + protector initialization: exactly one deployment owner, sealed setup; no duplicate active root keys or orphan plaintext files.
+- Ciphertext/tag/AAD tampering (tenant, secret ID, provider purpose, key version) fails closed; high-volume encrypted stores never reuse DEK/nonce pairs.
+- TPM unsupported, TPM cleared, PCR policy changed, Windows/Linux support differences, Linux Docker socket permissions and caller spoofing handled without secret disclosure.
+- Rotation fault halfway through rewrap, concurrent provider secret update and old key retirement rejected while active envelopes still refer to it.
+- Backup and **restore onto replacement hardware** using encrypted recovery kit; audit access and ensure app starts with bootstrap still SEALED; no provider secret is displayed in UI.
+- Vault/KMS outage, rate limits, managed identity unavailable, tenant-scoped key isolation and multi-node request with a key version change.
+- Browser dev tools, API payloads, telemetry/trace/logs, support bundles, database snapshots and object storage contain no stored plaintext secrets or raw MEKs.
+- Real provider connection test returns sanitized status; wrong API credentials are differentiated from decrypt/key-protection errors without revealing material.
+- Manual UX/a11y review of each protector choice, recovery step, error state, locked state, long-running rotation and mobile layouts.
+
+**Exit criterion:** S0 cannot be production-ready without a functioning encrypted wizard secret store and a demonstrated recoverability or explicitly documented approved external escrow policy. Optional TPM support should be released only when its platform-specific integration/security tests pass. Key loss is reported truthfully; software cannot recover a truly irrecoverable key.
+
+**Open-source assurance:** Local users can install, initialize, restore and rotate supported key protectors without vendor SaaS access. No secret key, recovery material or third-party credentials are bundled in repo/default container images.
