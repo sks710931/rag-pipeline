@@ -64,8 +64,9 @@ Accept file type only after extension/MIME inspection and safe content sniffing;
 | --- | --- | --- |
 | Web | React + **strict TypeScript** + Tailwind | Typed source viewer and answer renderer |
 | API and application | ASP.NET Core 10; modular monolith | Central identity, authorization, workflows, domain behavior and query orchestration |
-| Document intelligence | Python workers | Docling first, specialized parser/OCR fallback, PyMuPDF for page rendering/crops |
-| Advanced layout/OCR | Azure AI Document Intelligence adapter | Optional per-page/per-document fallback for low-confidence or difficult material |
+| Document intelligence | Python workers | Native extraction via Docling/PyMuPDF, with primary OCR through a Mistral deployment in Microsoft Foundry (Azure AI Foundry) |
+| Primary cloud OCR | **Mistral Document AI / OCR on Microsoft Foundry** | Azure-hosted OCR endpoint; configurable deployed model/version, region, credentials, supported limits and response format |
+| Specialized OCR/layout fallback | **Azure Document Intelligence in Foundry Tools** | Separate Azure resource/endpoint and API version; use for cell geometry, forms, or low-confidence layout requiring specialized extraction |
 | Vision, generation | OpenAI or Azure OpenAI cloud APIs | Configurable by task/model policy; structured answer contract |
 | Text embeddings | Configurable multilingual text embedding adapter | Store profile, dimensions, model/version, preprocessing |
 | Image/multimodal embeddings | Provider supporting compatible text/image embedding spaces | Required for genuine text-to-image and image-to-image retrieval; do not substitute text-only embeddings |
@@ -78,6 +79,61 @@ Accept file type only after extension/MIME inspection and safe content sniffing;
 | Deployment | Docker Compose locally; Azure Container Apps or Kubernetes | Hybrid, with cloud inference and optional managed infrastructure |
 
 **Deployment rule:** Keep the document system, metadata, object storage, workers, and vector index independently deployable. Cloud AI processing is an explicit data-egress boundary and must comply with per-collection model/data policies.
+
+### 3.1 Azure-hosted OCR provider topology (selected)
+
+- **Default OCR provider:** a **Mistral OCR / Document AI deployment in Microsoft Foundry (Azure AI Foundry)**. Use the actual Foundry deployment URL, model/deployment identifier, authentication mechanism and supported request shape; never assume the native Mistral API endpoint or model ID is interchangeable with a Foundry deployment.
+- **Fallback / specialist:** **Azure Document Intelligence in Foundry Tools**, via its own configured endpoint and API version (for example, the version-pinned `prebuilt-layout` or `prebuilt-invoice` model). The user refers to this as the "document foundry" service; the Microsoft documentation names it *Azure Document Intelligence in Foundry Tools*. It can be backed by a Document Intelligence resource or an eligible Foundry Tools resource. Do not assume these two providers share credentials, endpoint conventions or billing meters.
+- **Native-first preprocessing:** Docling/PyMuPDF remains responsible for non-OCR native PDF extraction, page rendering, geometric normalization, and preservation of original content. `.md`, `.txt` and safe native HTML do not incur OCR by default.
+- **Provider identity and availability:** Resolve model identifiers, API versions, supported regions, quotas, input page/file limits, response capabilities and data-handling policy from configuration and startup capability checks. A specific model shown in the Foundry catalog might be preview or not deployable in a chosen region/subscription. Never hardcode a model (including OCR 4.x) without verifying its availability for the deployment.
+- **Failover policy:** invoke Document Intelligence if the Mistral result fails required structure, geometry, provenance or field/cell quality gates; an expensive second pass must be deliberate and auditable. A fallback failure results in `PARTIAL` / review, not a fabricated complete extraction.
+- **Provider reconciliation:** normalize both outputs into the same CDM, preserve each provider's raw response, and record per-element provider/run/quality metadata. Do not blindly merge conflicting cell text, numbers, bounding boxes or table shapes. Validate source-space coordinates before issuing citations.
+- **Long document handling:** choose per-page/per-range jobs and stitch with global page offsets when endpoint limits require splitting; preserve original page numbering and continuation links for multi-page tables.
+
+Implementation contracts:
+
+~~~text
+IDocumentExtractionProvider
+  AnalyzeAsync(source, requestedFeatures, policy, cancellationToken)
+  GetCapabilitiesAsync(configuration, cancellationToken)
+
+Provider implementations:
+  FoundryMistralOcrProvider
+  AzureDocumentIntelligenceProvider
+  NativeDocumentParserProvider (no cloud OCR for supported native inputs)
+~~~
+
+Illustrative configuration shape (values are environment/Key Vault references, **not secrets**):
+
+~~~yaml
+DocumentIntelligence:
+  PrimaryOcrProvider: foundry-mistral
+  FallbackOcrProvider: azure-document-intelligence
+  NativePdfExtraction: true
+  Providers:
+    FoundryMistral:
+      Endpoint: ${FOUNDRY_MISTRAL_ENDPOINT}
+      DeploymentId: ${FOUNDRY_MISTRAL_DEPLOYMENT}
+      CredentialSource: key-vault
+      Region: ${FOUNDRY_MISTRAL_REGION}
+    AzureDocumentIntelligence:
+      Endpoint: ${AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT}
+      ApiVersion: ${AZURE_DOCUMENT_INTELLIGENCE_API_VERSION}
+      LayoutModelId: prebuilt-layout
+      CredentialSource: managed-identity-or-key-vault
+  Routing:
+    FallbackOnMissingRequiredGeometry: true
+    FallbackOnInvalidTableStructure: true
+    AllowPartialResults: true
+~~~
+
+Mistral's Foundry deployment and Document Intelligence must have separate adapters, metrics, rate limits, circuit breakers, cost accounting and diagnostic provenance. Do not claim that using both services inside Azure guarantees that no cross-region movement occurs; validate actual selected regions and enterprise egress restrictions.
+
+Official references:
+- [Microsoft Foundry model catalog — Mistral](https://ai.azure.com/catalog/models?publisher=Mistral+AI)
+- [Microsoft Learn — Image-to-text models on Foundry](https://learn.microsoft.com/en-us/azure/ai-foundry/how-to/use-image-models)
+- [Microsoft Learn — Azure Document Intelligence in Foundry Tools](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/overview?view=doc-intel-4.0.0)
+- [Microsoft Learn — Document Intelligence SDK / REST API](https://learn.microsoft.com/en-us/azure/ai-services/document-intelligence/how-to-guides/use-sdk-rest-api?view=doc-intel-4.0.0)
 
 Do not hardcode one exact external model version into the domain. Pin actual provider model IDs, API versions, parser releases, image embedding dimensions and pricing via deploy configuration and record them in processing runs.
 
@@ -194,7 +250,7 @@ A model-generated description is useful for search but is never substituted for 
 
 Determine per-page strategy: native extraction, OCR, or mixed. Preserve pages, rotation, dimensions, vector/raster originals, paragraphs, headings, columns, reading order, tables (including merged cells and spanning pages), captions, figures, forms, equation source and renderings, embedded attachments, and citations/references where available.
 
-Use Docling as primary structural parser, PyMuPDF for rendering and geometry, and an optional Azure Document Intelligence fallback by page/region/document. Route based on diagnostics or evaluation, not an assumption one engine is always best.
+Use Docling/PyMuPDF for native PDF structure, rendering and geometric grounding. When OCR/document understanding is necessary, send eligible PDF pages or images to the **Mistral model deployed on Microsoft Foundry** as the **primary cloud OCR provider**. Use **Azure Document Intelligence in Foundry Tools** selectively for ambiguous layouts, specialized form extraction, missing cell-level geometry, poor-confidence output, or evidence integrity failures. Check regional model availability and actual endpoint capabilities; preserve the raw outputs and extraction provenance of both providers. Route based on diagnostics, supported features, evaluation results and policy, not an assumption one engine is always best.
 
 Engineering drawings and dense charts require high-resolution source assets and region-oriented retrieval. Measurements, symbols, connectivity, tolerances and plotted values inferred by vision are **unverified until validated**. Never claim manufacturing-grade extraction accuracy without evidence.
 
@@ -252,15 +308,15 @@ flowchart TD
     S["Store immutable original + metadata"]
     Q["Queue stage with outbox"]
     D{"Detected source type"}
-    P["PDF parser"]
+    P["PDF native parse + Foundry Mistral OCR as needed"]
     H["HTML parser"]
-    I["Image parser"]
+    I["Image parser + Foundry Mistral OCR as needed"]
     MD["Markdown AST parser"]
     T["Plain-text parser"]
     N["Normalize -> CDM + locators"]
     C["Check quality/coverage and assets"]
     F{"Accepted?"}
-    R["Fallback / manual review / partial status"]
+    R["Azure Document Intelligence in Foundry Tools<br/>or manual review / partial status"]
     K["Persist elements + provenance"]
     X["Create retrieval units and embeddings"]
     Y["Stage and validate all indexes"]
@@ -576,7 +632,7 @@ Initial planning size: **10,000 documents**; actual compute and storage depend o
 
 **Development:** Docker Compose with ASP.NET API, React app, Python workers, PostgreSQL, Qdrant, MinIO, RabbitMQ, and observability. Provider credentials supplied by secrets/environment injection.
 
-**Production:** Azure Container Apps or Kubernetes for API/workers, managed PostgreSQL, Blob storage, Service Bus and appropriate managed/hosted vector infrastructure. Use horizontal worker queues split by resource class (native extraction, OCR, vision, indexing); separately throttle expensive cloud AI calls.
+**Production:** Azure Container Apps or Kubernetes for API/workers, managed PostgreSQL, Blob storage, Service Bus and appropriate managed/hosted vector infrastructure. Cloud OCR uses a **Mistral deployment hosted in Microsoft Foundry**, with a separately configured **Azure Document Intelligence in Foundry Tools** resource as specialist fallback. Use horizontal worker queues split by resource class (native extraction, OCR, vision, indexing); separately throttle each Azure provider's expensive AI calls and track provider/region-specific limits.
 
 Run ingestion asynchronously with backpressure, quotas, provider retry budgeting, model routing and per-tenant usage reporting. Keep index/asset formats portable between local and cloud adapters.
 
@@ -590,6 +646,7 @@ Run ingestion asynchronously with backpressure, quotas, provider retry budgeting
 
 ### I2 — Canonical extraction and provenance
 - CDM v1 with element types, typed relationships and evidence locators.
+- Configure Foundry Mistral OCR and Azure Document Intelligence separately; prove endpoint/model capabilities, routing, page offset consistency and provider-specific provenance through integration tests.
 - PDF native/OCR/table/figure parsing with coverage manifests.
 - **Markdown parser with full AST/raw source preservation** and line/span citation anchors.
 - **Plain-text parser with encoding/newline preservation** and line/span citation anchors.
@@ -681,6 +738,7 @@ The directory tree is **proposed**, not a claim that the project is already impl
 | ADR-007 | Markdown and plain text are native sources, not downgraded to generic unlocated chunks |
 | ADR-008 | Staged index generations with atomic READY cutover and recovery reconciliation |
 | ADR-009 | Cloud AI adapter with data classification/egress controls and model-version tracking |
+| ADR-010 | Azure Foundry-hosted Mistral is the primary cloud OCR; Document Intelligence in Foundry Tools is an independent specialized fallback adapter |
 
 Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incremental sync, human annotation workflows and knowledge-graph features without changing the core provenance contracts.
 
