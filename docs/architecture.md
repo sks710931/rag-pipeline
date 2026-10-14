@@ -1,9 +1,9 @@
 # Enterprise Multimodal RAG Platform — Architecture
 
 > **Status:** Proposed architecture (implementation specification, not a claim of completed functionality)  
-> **Version:** 1.3 — open-source and multi-distribution product architecture; all v1.2 reliability, extraction and grounding requirements remain in force  
+> **Version:** 1.4 — evidence governance, verifiable publishing, secure agent integrations, review workflows, safe redaction and knowledge quality; all v1.0–v1.3 decisions remain in force  
 > **Date:** 2026-10-15  
-> **Revision basis:** v1.2 plus open-source distribution, enterprise self-hosting, managed multi-tenant SaaS, local/federated identity, scoped RBAC, resource policies, and a SaaS control plane. Existing v1.0–v1.2 decisions and performance benchmark qualifications are preserved.  
+> **Revision basis:** v1.3 plus six product capabilities: proactive evidence freshness/contradiction governance, verifiable Evidence Briefs, tenant-scoped MCP, human review, sensitivity-aware redaction, and privacy-preserving knowledge-gap analytics. Existing v1.0–v1.3 decisions, performance gates and open license decision are preserved.  
 > **Repository:** sks710931/rag-pipeline  
 > **Target:** Open-source core; self-hosted/on-premises and managed multi-tenant SaaS distributions; approximately 10,000 initial documents per sizing scenario, multilingual, cloud AI by default (customer-configurable provider policies).
 
@@ -29,6 +29,12 @@ The following invariants govern all designs and implementations:
 12. **Identity is not authorization.** External IdPs prove identity; tenant membership, resource-scoped permissions and content classification govern access.
 13. **Isolation follows the content.** Every original, derivative, index entry, audit record, conversation, job, cache and export belongs to a tenant and an enforced authorization scope.
 14. **Commerce is not permission.** Billing/feature entitlements and quotas never grant document access; subscription state is evaluated separately from RBAC and document ACLs.
+15. **Evidence freshness is distinct from citation validity.** Immutable historical citations can remain valid while the associated *answer* becomes stale; supersession, conflicting authority and effective dates require separate verified governance states.
+16. **Human corrections never rewrite originals.** Reviewer decisions create append-only, versioned derived overlays and controlled re-publication with source lineage and separation of duties.
+17. **Classification precedes disclosure.** Restricted evidence is never disclosed as raw text, original asset, snippet, embedding context, exported file or agent-tool result to an unauthorized principal; visual black rectangles are not redaction.
+18. **Portable bundles prove integrity, not factual truth.** Signed manifests preserve hashes and lineage, while claim support and calculations require their own verification and documented assumptions.
+19. **External agents have no exceptional authority.** MCP/tools run through the same authenticated tenant, permissions, sanitization, source-verification and usage gates as browser and API callers.
+20. **Quality analytics do not become surveillance.** Abstention and retrieval diagnostics are privacy-controlled tenant summaries, not a way to reveal another user's questions or inaccessible documents.
 
 ## 2. Scope and inputs
 
@@ -229,6 +235,12 @@ flowchart TD
 7. **Query & Answer:** intent planning, evidence packing, model gateway, grounded structured output and citation verification.
 8. **Table Analytics:** typed cells, calculation plans, verified deterministic execution, result provenance.
 9. **Operations & Audit:** metrics, traceability, diagnostic events, retention, reprocessing and governance.
+   - v1.4 **Evidence Governance** tracks saved-answer freshness, reviewed contradictions and notifications.
+   - v1.4 **Evidence Publishing** manages briefs and cryptographic verification bundles.
+   - v1.4 **Human Review** manages overlays, approvals and correction publication.
+   - v1.4 **Sensitivity Policy** produces authorized document/text/asset views and policy-safe retrieval units.
+   - v1.4 **Integrations** serves scoped MCP tools through the existing RAG authority.
+   - v1.4 **Knowledge Quality** aggregates privacy-safe abstention and retrieval diagnostics.
 10. **Tenant & Workspace Management:** tenant onboarding/lifecycle, workspace hierarchy, cross-tenant isolation, settings and configuration policy.
 11. **SaaS Control Plane (optional in self-hosted):** plan entitlements, subscriptions, metering, billing integrations, quotas, platform operator support and deployment allocation.
 12. **Distribution & Extension Management:** deployment modes, installed edition capabilities, migrations, tenant portability, optional integrations and signed release metadata.
@@ -496,6 +508,13 @@ PostgreSQL is the system of record; use UUID/ULID identifiers consistently and d
 | answer_claims, answer_citations | Evidence-backed claim references and semantic support verification |
 | calculation_runs, calculation_inputs | Authorized deterministic expression, contributing input values and result |
 | audit_events, corrections | Actor, action, targets, version history and review |
+| saved_answers, evidence_dependencies, answer_freshness_states | Saved/pinned answer versions, reverse element/claim dependencies and source-freshness status |
+| evidence_governance_events, contradiction_candidates, notification_subscriptions, notification_outbox | Supersession/contradiction review events, authority/effective-date policy, deduplicated alerts |
+| evidence_briefs, evidence_brief_revisions, brief_blocks, verification_manifests | Editable briefs, immutable published contents, citation/calculation snapshots, signed hashes and export lineage |
+| review_tasks, review_decisions, verification_overlays | Tenant-scoped extraction review state, optimistic task ownership, approvals, immutable human-correction evidence |
+| sensitivity_annotations, redaction_policies, sanitized_derivatives | Located PII/classification findings, explicit enforcement policy, policy-versioned safe content and assets |
+| mcp_client_grants, integration_audit_events | MCP client identification, delegated user/service principal scopes, tool/action budgets and audit |
+| knowledge_quality_events, knowledge_quality_aggregates | Privacy-filtered abstention/retrieval outcomes and tenant/workspace-level analytics |
 
 ### 8.0.1 Tenant-scoped identities and resource hierarchy (v1.3)
 
@@ -778,10 +797,12 @@ LLM prompt caching is an **opportunity, not a promised 80–90% hit rate**. Keep
 Workspaces:
 
 1. **Search/Chat:** multilingual queries, optional image uploads, filters, typed answer blocks, original figures/tables and clickable citations.
-2. **Evidence Viewer:** split view for answer/source, PDF.js page overlays, HTML snapshots, image zoom/region overlays, Markdown raw/rendered source spans, text line highlighting.
+2. **Evidence Viewer:** split view for answer/source, PDF.js page overlays, HTML snapshots, image zoom/region overlays, Markdown raw/rendered source spans, text line highlighting; policy-safe evidence renditions where required.
 3. **Document Explorer:** files, collection hierarchy, outlines, extracted elements, tables/figures, metadata, versions and indexed status.
-4. **Extraction Inspector:** original vs parsed layout, warnings, missing assets, OCR regions, table reconstruction, corrected annotations.
-5. **Admin:** collections, policies, roles, ingestion retries, parser profiles, model configurations, usage/cost, audit and evaluations.
+4. **Extraction Inspector + Review Inbox:** original vs parsed layout, warnings, missing assets, OCR regions, table reconstruction, reviewer-assigned correction tasks, verification/approval and derived overlay publication.
+5. **Admin + Knowledge Health:** collections, policies, roles, ingestion retries, parser profiles, model configurations, usage/cost, governance/contradiction alerts, sensitivity policy, privacy-safe abstention trends, audit and evaluations.
+6. **Evidence Briefs:** pin permitted verified answer blocks, annotate findings, review evidence freshness, publish immutable revisions and export signed verification bundles; retain per-section source verification state.
+7. **Notifications / Governance Center:** permission-scoped saved-answer changes, review tasks, contradiction candidates, subscriptions and notification preferences; no confidential excerpts in untrusted notification channels.
 
 **Markdown/text viewer requirements:** show line numbers, exact original line breaks, Raw/Rendered toggle for Markdown, highlighted citation ranges, copy source selection, and safe rendering that never runs embedded scripts or code.
 
@@ -836,6 +857,20 @@ Generate narratives only from verified alignment pairs and resolved evidence. Fo
 | GET/POST | /api/v1/tenants/{id}/service-accounts | Scoped machine credentials |
 | GET | /api/v1/tenants/{id}/usage | Tenant-authorized metering |
 | GET | /api/v1/tenants/{id}/entitlements | Effective feature/plan limits |
+| POST/GET | /api/v1/evidence-briefs | Create/list authorized working briefs |
+| POST | /api/v1/evidence-briefs/{id}/blocks | Pin verified query block with provenance |
+| POST | /api/v1/evidence-briefs/{id}/publish | Publish immutable verified brief revision |
+| POST | /api/v1/evidence-briefs/{id}/exports | Request policy-safe signed bundle/PDF/HTML export |
+| GET | /api/v1/evidence-briefs/exports/{exportId}/verify | Authorized manifest verification metadata (offline verifier also available) |
+| GET | /api/v1/governance/alerts | Permission-scoped freshness and conflict alerts |
+| POST | /api/v1/governance/alerts/{id}/resolve | Record authorized review/revalidation decision |
+| GET/POST | /api/v1/reviews | Scoped review tasks/assignment |
+| GET | /api/v1/reviews/{id}/source | Authorized reviewer evidence/crop (original if entitled) |
+| POST | /api/v1/reviews/{id}/decision | Verify/reject proposed correction with concurrency guard |
+| POST | /api/v1/reviews/{id}/publish | Publish approved derived overlay/generation |
+| GET/PUT | /api/v1/tenants/{id}/redaction-policies | Authorized sensitivity policy administration |
+| GET | /api/v1/knowledge-health | Authorized aggregated quality/gap analytics |
+| POST/GET | /api/v1/mcp | Tenant-scoped MCP Streamable HTTP transport (enabled deployments only) |
 | /scim/v2 | SCIM 2.0 resource API (optional) | Bearer-scoped provisioning endpoint for configured tenant connection |
 | /api/v1/operator/* | SaaS operator-only APIs | Explicitly separated operator identity and authorization boundary |
 
@@ -915,6 +950,13 @@ Build a labeled dataset of 300–500 representative multilingual queries, spanni
 | Permission scope planning | Unauthorized context and unbounded/truncated filter lists | 0; recall/latency measured at broad and narrow scopes |
 | Verified streaming | Dangling block dependencies reaching final UI | 0 |
 | Analytical sandbox | Unbounded query resource usage / timed-out query reported as empty result | 0 under fault tests |
+| Saved citation freshness | Changed cited source missed after READY publication / invalid old citation falsely labeled corrupt | 0 in gold regression; measured detection lag |
+| Contradiction governance | False confirmed contradictions or unapproved cross-document precedence | 0 unreviewed final conflicts; measure candidate precision/recall |
+| Evidence Brief integrity | Tampered manifest/evidence/calculation accepted as valid offline | 0; unsigned/unverifiable elements marked explicitly |
+| Reviewer overlays | Unapproved/conflicting/stale correction becomes active | 0; optimistic concurrency + separation-of-duty tests |
+| Sensitivity control | Unauthorized plain text, raster pixels, PDF text layers, snippets, vectors or tool responses leaked | 0 in supported redaction threat-model corpus; unresolved => deny |
+| MCP integration | Unauthorized tool result; cross-tenant client, confused deputy or token-audience substitution | 0 |
+| Knowledge quality | Query text/rare-topic leak or mistaken definite missing-manual diagnosis | 0 tested leaks; classifier uncertainty labeled |
 
 These are **targets, not measured performance or universal guarantees**. Evaluate per language, format and document difficulty; publish failure/abstention rates separately. Use golden files for source-offset reconstruction (especially Markdown CRLF, Unicode, BOM, tabs, footnotes, tables, code fences and relative links).
 
@@ -956,6 +998,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 ## 18. Implementation roadmap
 
 ### I1 — Platform foundations
+- Add event contract placeholders for immutable saved-answer dependencies, review provenance, sensitivity classification and auditable governance notifications; machine-readable permission catalog includes v1.4 actions, with default-deny policies. The governance UI and remote MCP server are NOT I1 dependencies.
 - Add **deployment mode and capability boundaries** (OSS self-hosted and hosted SaaS share core); automated local bootstrap must not require a vendor SaaS control-plane call.
 - Implement **Tenant → Workspace → Collection → Document** hierarchy, immutable tenant ownership, tenant switcher and tenant-aware DB/RLS, object, queue and cache contracts.
 - Implement **ASP.NET Core Identity local accounts + OIDC federation** (Entra ID/External ID and generic enterprise OIDC), secure BFF session cookie, tenant invitation/registration, verified issuer/subject identity mapping, local admin recovery and revocation.
@@ -970,6 +1013,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** repeated delivery and worker crashes preserve artifacts; expired Worker A cannot overwrite/publish after Worker B takes over; large extraction payloads never enter the broker; competing outbox tenants get fair service; **built-in/OIDC login, tenant switching, scoped role checks, revoked sessions and cross-tenant RAG isolation** hold under tests, including a completely local self-hosted bootstrap.
 
 ### I2 — Canonical extraction and provenance
+- Implement tenant-scoped reviewer task creation for PARTIAL / UNVERIFIED_* and extraction quality failures, immutable human correction overlays and approval/publish gates without re-OCR. Add sensitivity annotation hooks and conservative restricted-content admission; do not expose partly masked content until full safe-rendition tests pass.
 - Enforce tenant-scoped ingestion quotas, tenant-assigned OCR/model policy, provider egress configuration and per-tenant processing audit/usage events.
 - CDM v1, typed element relationships, exact evidence locators and immutable source-derived assets.
 - Configure Foundry Mistral OCR and Azure Document Intelligence separately; verify deployed endpoint identity, quotas, auth, page/file limits, request shape and pricing.
@@ -980,6 +1024,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** a 150-page mixed PDF survives batch failures with correct global page citations and cross-page tables; broken/hidden text layers escalate correctly; local parsing does not require gratuitous per-page DB writes; shared throttles prevent coordinated retry storms; costs and routing remain observable.
 
 ### I3 — Grounded hybrid RAG
+- Persist evidence dependency edges for pinned/saved verified answers; record granular retrieval failures/abstentions and authorization-aware cause codes. Ensure any redacted retrieval context is sanitized BEFORE LLM input and all answer/citation delivery.
 - Enforce workspace/collection/document ACLs end to end for text, tables, figures, citations, query history, exports and service accounts; add permission-revocation tests.
 - Retrieval units, text embeddings, lexical index, Qdrant and fused/reranked retrieval.
 - Authority-based permission resolution, **cardinality-aware Qdrant plans** for collection-wide grants, explicit overrides and bounded document scopes; access checks before LLM context and again at evidence/asset delivery; version-pinned read paths.
@@ -988,6 +1033,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** citation/grounding tests pass; no leaked/dangling dependent block survives a rejected middle block; permission scopes with many document IDs retain tested recall without leaking access; revoked access fails closed and no partial indexes are queryable.
 
 ### I4 — Full multimodal + HTML
+- Add safe server-generated redacted PDF/image derivatives and policy-aware text/HTML/figure citation rendering; validate text layers, original URLs, caches, vector descriptions and image crops cannot leak masked content.
 - Maintain tenant/evidence ownership across image crops, OCR assets, multimodal indexes and rendered HTML; prove no asset URL/cached-result leakage across tenants.
 - Standalone image parsing, OCR, vision descriptions, true cloud multimodal embeddings and image-image queries.
 - HTML parsing, sanitized DOM snapshots and optional isolated browser rendering; original figure/region viewer overlays.
@@ -995,6 +1041,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** visual queries display authorized originals and correct source locators; HTML/Markdown are safe to render; report per-modality recall/latency/cost.
 
 ### I5 — Tables, comparisons, multilingual
+- Build publishable immutable Evidence Brief revisions with offline-verifiable signed artifact manifests; trigger READY-driven structural citation freshness checks and reviewed conflict candidates. Extend calculation inputs and signed bundles with exact provenance, review decisions and effective-date policies.
 - Enforce permission-scoped comparisons, deterministic analytics and authorized export actions; tenant policy must govern both source and derived output.
 - Cell-level typed extraction with **multi-level row/column header paths and source-element relations**, caption/header unit and magnitude inheritance; `UNVERIFIED_SCALE`/`UNVERIFIED_HEADER` handling, exact NUMERIC calculations and exclusion provenance.
 - Execute analytics with a **dedicated read-only role/transaction, validated query plan and bounded statement/memory/row budgets**.
@@ -1003,6 +1050,7 @@ Never couple ingestion correctness or user identity to a SaaS billing provider; 
 - **Gate:** all gold-suite verified calculations are exact across stacked FY/quarter/audit headers; uncertain scales cannot silently corrupt totals; expensive analytics fail explicitly within budgets; diff classes and citations pass evaluation.
 
 ### I6 — Enterprise readiness
+- Expose scoped READ-ONLY remote MCP Streamable HTTP endpoint behind OAuth/resource audience validation and full per-tool RBAC. Add configurable notification delivery, privacy-preserving Knowledge Health dashboards, governance event observability, scheduled revalidation, export signature verification, retention/key rotation and cross-tenant/redaction penetration tests.
 - Harden managed SaaS: tenant provisioning/suspension/termination, plan entitlements, audit-ready usage metering, rate limits, platform-operator separation, backup/restore and SaaS data lifecycle.
 - Add enterprise federation extensions **SAML 2.0, AD DS/LDAPS/federation, Okta, Keycloak and other OIDC**, plus SCIM 2.0, controlled JIT, SSO enforcement and directory-group mapping based on customer priority.
 - Document signed OSS releases, install/upgrade/migrate/export contracts and tenant isolation tiers; implement private deployment upgrade flow and customer-owned AI credentials as policy allows.
@@ -1040,7 +1088,13 @@ rag-pipeline/
 │   ├── EvidenceCatalog/
 │   ├── Search/
 │   ├── QueryEngine/
-│   └── TableAnalytics/
+│   ├── TableAnalytics/
+│   ├── EvidenceGovernance/
+│   ├── EvidencePublishing/
+│   ├── HumanReview/
+│   ├── SensitivityPolicy/
+│   ├── IntegrationsMcp/
+│   └── KnowledgeQuality/
 ├── workers/
 │   ├── parser/
 │   │   ├── pdf/
@@ -1055,6 +1109,9 @@ rag-pipeline/
 │   ├── openapi/
 │   ├── cdm/
 │   ├── permissions/              # Machine-readable permission catalogue
+│   ├── governance/               # Event / freshness / review contracts
+│   ├── exports/                  # Signed verification manifest schemas
+│   ├── mcp/                      # Tool descriptions + schema, optional
 │   └── events/
 ├── tests/
 │   ├── unit/
@@ -1110,6 +1167,12 @@ The directory tree is **proposed**, not a claim that the project is already impl
 | ADR-035 | Shared SaaS data first; dedicated data/deployment placement later behind explicit isolation contracts |
 | ADR-036 | Source/license choice (Apache 2.0 vs AGPLv3 vs properly managed dual licensing) remains open for owner approval before public release |
 | ADR-037 | Secure identity provisioning, SCIM/group mapping, SSO enforcement, verified domains and emergency recovery are phased capabilities |
+| ADR-038 | Revalidate saved evidence through version-pinned reverse dependencies; distinguish supersession from contradiction |
+| ADR-039 | Editable Evidence Briefs publish immutable revisions and portable signed manifests; integrity is not semantic truth |
+| ADR-040 | Read-only MCP tool endpoint shares delegated/service-account authorization, verified evidence and redaction policies |
+| ADR-041 | Human review produces append-only, authorized overlays and staged re-publication; dual control for high-impact corrections |
+| ADR-042 | Safe server-side redacted renditions and policy-scoped search/index/LLM context; black visual overlays alone are forbidden |
+| ADR-043 | Tenant-private knowledge quality analytics distinguish missing knowledge from quality, permission or pipeline limitations |
 
 Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incremental sync, human annotation workflows and knowledge-graph features without changing the core provenance contracts.
 
@@ -1314,6 +1377,17 @@ Role templates are immutable versioned defaults; tenant-defined custom roles are
 | Export answers/analysis results | Y | Y | - | - | Y | Y | Y | Y | - | - |
 | Read authorized access/audit logs | Y | Y | Y | - | - | - | - | - | - | Y |
 | Manage tenant service accounts | Y | Y | Y | - | - | - | - | - | - | - |
+| Manage governance alerts / revalidation | Y | Y | - | - | Y | - | Y | - | - | - |
+| Create and edit permitted Evidence Briefs | Y | Y | - | - | Y | - | Y | Y | - | - |
+| Publish/export permitted Evidence Briefs | Y | Y | - | - | Y | - | - | Y | - | - |
+| Submit source-bound correction proposal | Y | Y | - | - | Y | Y | Y | - | - | - |
+| Approve reviewer corrections | Y | Y | - | - | Y | - | Y | - | - | - |
+| Manage sensitivity/redaction policies | Y | - | Y | - | - | - | - | - | - | - |
+| View aggregated knowledge-health dashboard | Y | Y | - | - | Y | - | - | - | - | - |
+| Use MCP integration (enabled and delegated) | Y | Y | - | - | Y | - | - | Y | - | - |
+| View unmasked confidential content | - | - | - | - | - | - | - | - | - | - |
+
+**v1.4 caveats:** Review submitters cannot approve their own high-impact proposal when dual control is required; approval and publication are distinct audited steps. The MCP row enables *using* the integration only, never additional content privileges. No built-in role receives `confidential.unmasked.read` by default: grant it explicitly at an authorized narrow resource scope with classification policy and step-up requirements. Governance/brief roles do not bypass source access checks.
 
 **Important separations:** security administrators do not receive document reading permission by virtue of security administration. Readers may see evidence excerpts and rendered figures when authorized but not necessarily download original complete files. Source download, export, permanent purge, delegated user impersonation, support access and ownership transfer are distinct sensitive permissions. Document rights from this table are always intersected with resource ACLs, confidentiality and data export policy. A tenant-scoped admin's role does not enable platform-operator APIs.
 
@@ -1370,6 +1444,32 @@ service_account.manage
 service_account.credential.rotate
 tenant.data.export
 tenant.data.delete
+
+evidence_brief.create
+evidence_brief.read
+evidence_brief.edit
+evidence_brief.publish
+evidence_brief.export
+evidence_brief.verify
+
+governance.alert.read
+governance.alert.manage
+governance.conflict.review
+governance.subscription.manage
+
+document.correction.propose
+document.correction.review
+document.correction.approve
+document.correction.publish
+document.sensitivity.manage
+confidential.unmasked.read
+confidential.redaction.policy.manage
+
+integration.mcp.use
+integration.mcp.client.manage
+
+knowledge_health.read
+knowledge_health.manage
 ~~~
 
 Permission metadata should define allowed scope types, delegation level, risk classification, prerequisite step-up MFA, audit category and whether it controls **operation** versus **content visibility**. Store assignment decisions and effective permission evaluation logs without dumping secret content.
@@ -1434,9 +1534,212 @@ A tenant moving between hosted and self-hosted instances exports original bytes,
 - Tenant export/import replays source references accurately and does not export secrets; tenant restore never exposes other organizations.
 - Operator accounts cannot read tenant content without explicit, time-bound and audited customer-approved access.
 
-## 26. Definition of done for the architecture
+## 26. Proactive evidence freshness and contradiction governance (v1.4)
 
-A working platform is acceptable only when (in addition to the established v1.0–v1.2 content/provenance guarantees):
+### 26.1 Scope, invariants and source authority
+
+A saved/pinned answer may cite a perfectly valid immutable v1 element even after v2 becomes READY. **Citation integrity remains valid for the historic source**; the saved **answer's current applicability** needs separate evidence-freshness state. Never rewrite saved answers or historical citations in place. The status is evaluated against the relevant source baseline (as-of date, version, collection, applicability, approval/effective dates and policy), not simply the highest version number.
+
+| Freshness state | Precise interpretation |
+| --- | --- |
+| CURRENT | Saved evidence is still applicable for its explicitly recorded baseline |
+| CITATION_SUPERSEDED | Cited source element was modified, removed or formally superseded in the applicable newer baseline; **not proof the old claim is false** |
+| REVIEW_REQUIRED | Change may alter a claim, calculation or safety/compliance consequence and needs authorized assessment |
+| CONTRADICTION_CANDIDATE | Competing applicable statements appear inconsistent; no final conflict yet |
+| CONTRADICTED | Two applicable, verified claims conflict under an established, reviewable authority/effective-date policy |
+| REVALIDATED | Saved artifact has an audited revalidation decision against specified sources and time |
+| SOURCE_UNAVAILABLE | Retention/erasure or revoked access prevents citation inspection; do not falsely mark prior hashes invalid |
+
+Reference hashes and source-version identity are immutable; freshness transitions form an append-only state/event history. Do not automatically treat a draft SOP as overriding an approved SOP, an old revision as invalid for legacy equipment, or a language-model similarity judgment as formal contradiction.
+
+### 26.2 Event-driven impact pipeline
+
+When an authorized document version reaches READY, its PostgreSQL transaction records a claim-check-only outbox event including tenantId, documentId, old/new ready version IDs, index generations, profile hash, run ID, effective-date/approval metadata and eventId. A tenant-scoped background worker consumes idempotently and:
+
+1. Uses §12.1 structural CDM/AST alignment to identify ADDED, REMOVED, MODIFIED, MOVED and ambiguous elements and relationships. Unchanged/moved-with-identical-content is **not** automatically stale.
+2. Traverses reverse **evidence_dependencies** from cited document elements/table cells/calculation inputs to saved answers, published briefs, workspace FAQs, reports and notification subscriptions; do not rescan all historic answers.
+3. Marks impacted artifacts as CITATION_SUPERSEDED or REVIEW_REQUIRED **for a named comparison baseline**. Verify whether a changed value materially affects calculations; do not invent a newly calculated result.
+4. Performs selective, permission-gated comparison of competing active documents using authority order, document family, effective interval, model/version and verified citations. Produce **CONTRADICTION_CANDIDATE** with bilateral source evidence and explicit uncertainty.
+5. Requires designated reviewer or policy-approved deterministic evidence to transition to CONTRADICTED or REVALIDATED. No unaudited model output may silently mark a regulatory conclusion definitive.
+6. Writes deduplicated notification events with severity, affected object IDs and **no confidential excerpts** by default. At delivery time, reauthorize recipient/subscriber against current tenant and object permissions. Failed or rate-limited notifications retry through the transactional outbox; revocations suppress disclosure.
+
+Use capped fan-out, checkpoints, fairness quotas and notification idempotency. Alert latency is measured from READY to state/notification creation, not promised as instantaneous. Revalidating an answer never alters the original v1 citation; it produces a new evaluated revision or tracked annotation.
+
+### 26.3 Contracts and dependencies
+
+- **evidence_dependencies:** tenantId, consuming artifact kind/ID/revision, source documentVersionId, elementId and/or tableCellId, evidenceId, claimId, dependency kind, calculationRunId (if any), source hash and active-baseline constraint. Unique composite indexes enable reverse lookup. Entries are created when verified claims/briefs/FAQ revisions are saved, not retroactively assumed for unsaved transient chat.
+- **answer_freshness_states:** artifact revision, baseline, state, triggering event ID, reviewer, reason, evidence and timestamps. State history is append-only; current status is a projection.
+- **evidence_governance_events / contradiction_candidates:** source-pair references, authority policy, applicability periods, confidence/diagnostics, review state, decision, audit events.
+- **notification_subscriptions / notification_outbox:** tenant, workspace, principal/subscriber, authorized scope, channel and deliverability/retry settings. Webhooks and emails contain only allowed metadata.
+- **Permissions:** governance.alert.read/manage, governance.conflict.review and governance.subscription.manage; status changes to confidential artifacts require independent document.read privilege.
+- **API/UI:** governance alerts feed, workspace freshness dashboard, review/revalidate workflow, subscriptions and saved answer status chips; old citations still open the correct retained source when allowed.
+
+## 27. Saved Evidence Briefs and offline-verifiable audit bundles (v1.4)
+
+### 27.1 Brief authoring and immutable publication
+
+A user with evidence_brief.create plus underlying document access can pin **already verified** answer blocks (paragraph, table, calculation, retrieved original/crop, comparison) from multiple authorized queries into an editable brief. Brief working drafts carry an explicit tenant/workspace owner, collaborators, permission scope, section ordering, annotations, and block IDs. Each block retains query ID, verified claim/support verdict, original document version(s), cited element IDs and locators, extraction/profile version, and for arithmetic the exact typed plan, expression and calculation inputs. **A pasted unverified paragraph is draft commentary, not verified evidence.**
+
+Publication creates an **immutable evidence_brief_revision** with a provenance closure over every referenced source, the currently assessed freshness states, policy/sensitivity classification, actor, timestamp, approval and stable hashes. Source changes do **not** rewrite published revisions: they generate a stale/review alert (§26) and may prompt publication of a new revision. Publishing may require step-up MFA or second-person approval by tenant policy.
+
+### 27.2 Formats and manifest
+
+Support controlled outputs: HTML report + manifest, PDF report + manifest, and a portable ZIP **verification bundle** containing approved evidence material, transformations, typed calculation metadata, hashes, signature and a standalone/offline verifier (script or executable as documented). The signed canonical manifest (versioned schema with reproducible serialization and deterministic ordered entries) contains:
+
+~~~json
+{
+  "schemaVersion": "evidence-bundle/v1",
+  "bundleId": "bundle-id",
+  "tenantId": "tenant-id",
+  "briefRevisionId": "immutable-revision-id",
+  "createdAt": "ISO-8601 timestamp",
+  "publisher": "signed publisher identity/pseudonymous audit ID",
+  "policyVersion": "policy-revision",
+  "artifacts": [
+    {"path": "evidence/page-crop-01.png", "sha256": "hex", "sourceVersionSha256": "hex", "transform": {"kind": "crop", "sourceLocator": {"page": 5}}},
+    {"path": "calculations/calc-01.json", "sha256": "hex", "calculationRunId": "run-id"}
+  ],
+  "claims": [{"blockId": "block-id", "evidenceIds": ["ev-id"], "supportStatus": "verified"}],
+  "signature": {"algorithm": "policy-allowlisted-signature", "keyId": "key-id", "value": "signature-value"}
+}
+~~~
+
+For cryptographic signing, sign **canonical unsigned manifest bytes** (or a canonical digest) and attach a detached signature or a clearly excluded signature field to avoid self-referential hashing. Use an allowlisted signature algorithm (for example Ed25519 or ECDSA with validated canonical encoding), a tenant/deployment scoped signing key in Key Vault/HSM where configured, key ID, public-key/trust-chain distribution and rotation/revocation policy. A stand-alone offline verifier must validate the signature against an **independently trusted** public key, each included artifact hash, transformation lineage as far as reproducible, calculation-plan/input file integrity, schema completeness and allowed algorithms.
+
+**Limits of proof:** Hashes and signatures establish tamper evidence and signer identity under a trust policy, *not* that an LLM claim is factually correct. A source-hash reference alone does not let an offline auditor inspect the source unless authorized content is actually included in the bundle. Explicitly label missing source material as **externally referenced / not independently verifiable offline**; source link rot or revoked access is not hidden by a green signature. Derived crop/HTML/PDF representations are not interchangeable with the original bytes; record their transforms and original hashes.
+
+### 27.3 Export policy, safety and audit
+
+Run a fresh tenant/resource/field-level authorization and data-classification check at **export time**, and again before a delayed download; opening a past brief never grants permanent access to its protected sources. Redact permitted renditions (§30) or refuse export when a safe transformation cannot be proven. Original asset inclusion requires document.original.download or a separate export-specific grant; an answer export permission alone does not grant all source bytes. Package signing keys and confidential data never leave the authorized deployment.
+
+Store immutable signed manifest, export run, verifier result and download audit. Support offline validation on self-hosted deployments with **no vendor SaaS dependency**. Exports subject to erasure, legal holds and retention use explicit lifecycle policies; signed historical artifacts may later be **cryptographically intact but authorization-inaccessible**. Prevent path traversal, active HTML scripts and untrusted embedded content in portable packages.
+
+### 27.4 Brief lifecycle, API and permissions
+
+- **Workflow:** DRAFT → IN_REVIEW (optional) → PUBLISHED revision → SUPERSEDED_BY_NEW_REVISION or ARCHIVED; a stale source flags status without editing the revision.
+- **Entities:** evidence_briefs, brief_blocks, evidence_brief_revisions, verification_manifests, export_runs, export_artifacts, and evidence_dependencies.
+- **Permissions:** evidence_brief.create/read/edit/publish/export/verify and underlying source/asset permissions; approval/release may require distinct actors by policy.
+- **API/UI:** brief list/editor, pin verified block, ordered composition, freshness marker, publish, export ZIP/PDF/HTML, audit, and local verifier instructions.
+
+## 28. Tenant-scoped Model Context Protocol (MCP) integration (v1.4)
+
+### 28.1 Protocol and transport boundary
+
+Offer optional **/api/v1/mcp** as a first-class remote MCP server using the transport and authorization specifications for the implemented MCP release (Streamable HTTP for the targeted release, appropriate session/Origin validation and resource metadata). Use the standards-defined protected-resource authorization discovery for OAuth clients; validate access-token issuer, audience/resource indicator, expiry, tenant, scopes and client identity. **Do not accept an access token issued for some other API just because its signature is valid; no token passthrough.** CORS/Origin and local host binding controls are part of the threat model.
+
+For human IDE assistants/bots, use **delegated per-user authorization** and effective active-tenant membership. For scheduled/headless agents, use tenant-scoped service_account/API-client grants per §22.4. Tokens must not carry unrestricted platform operator rights, and API keys must not be used as anonymous substitute for OAuth where the selected MCP client/server contract requires OAuth. Machine and delegated principals both undergo the §24 authorization policy and §30 redaction policy **for every tool call**.
+
+### 28.2 Proposed read-only tools
+
+| Tool | Inputs | Authorization | Output |
+| --- | --- | --- | --- |
+| search_verified_evidence | Query, permitted workspace/collection, language, filters, paging | integration.mcp.use AND query.execute AND resource ACL | Pre-authorized typed CDM evidence with deep links and support metadata |
+| get_evidence | Short-lived evidence ID, requested safe format | integration.mcp.use AND document.read AND field policy | Server-sanitized excerpt/crop locator or policy-safe denial |
+| compare_document_versions | Allowed immutable version IDs, comparison scope | integration.mcp.use AND query.compare AND both-side ACL | Structural differences and verified bilateral citations |
+| execute_table_calculation | Typed allowed plan and bounded filters | integration.mcp.use AND query.analytics.execute AND cell permissions | Deterministic result, excluded inputs and calculation provenance |
+| get_document_outline | Document/version ID | integration.mcp.use AND document.read | Allowed structural outline with no inaccessible node leaks |
+| get_processing_status | Document/job ID | integration.mcp.use AND scoped document-management capability | Authorized status/diagnostic summary |
+
+No arbitrary SQL, raw Qdrant access, unrestricted vector chunks, document deletion, ACL modification, unreviewed writes or free-form model-executed commands in the initial MCP surface. MCP descriptions/results are **untrusted external text** to downstream assistants; source document prompt injection cannot expand tool authority. Maintain strict output size/pagination/resource limits, tenant quotas, per-tool audit/correlation and timeout/cancellation.
+
+A **verified evidence tool result** means referentially valid, authorized and provenance-linked; do not label subjective inference as certain solely because the source exists. Provide status/freshness and applicable disclaimers. Viewer deep links are only pointers; the UI rechecks current authorization instead of exposing bearer tokens or long-lived public asset links. Resources/prompts, if later exposed via MCP, must have independent explicit policy and safety checks.
+
+### 28.3 Deployment and rollout
+
+MCP is an optional connector for OSS/on-prem and SaaS, not a requirement for core RAG bootstrapping. Advertise capability only where enabled; document transport/version compatibility, authorization-server metadata, scopes, onboarding and per-tenant client registration. Host externally accessible MCP behind HTTPS reverse proxy with origin/CSRF/session protections. Keep service accounts and per-user delegation separate. Test confused deputy, cross-tenant, token audience, SSRF, CSRF, prompt injection, streaming cancellation, revoked membership and sensitive-source redaction. Ship the external endpoint only after the core authorization and evidence policy gates pass.
+
+## 29. Human-in-the-loop extraction and evidence review (v1.4)
+
+### 29.1 Review triggers, inbox and authority
+
+The Extraction Inspector becomes a tenant/workspace-scoped **Review Inbox** for unresolved PARTIAL versions, UNVERIFIED_SCALE, UNVERIFIED_HEADER, missing table-cell geometry, OCR corruption, uncertain source locators, contradictory extraction runs and sensitivity/redaction uncertainty. A reviewer assigned a task sees an original PDF/page crop **only when the reviewer is authorized for the source**; a redacted safe rendition otherwise applies. Do not expose a restricted document simply because the user has the RV role.
+
+Task state machine: PENDING → ASSIGNED → IN_REVIEW → PROPOSED → APPROVED / REJECTED → PUBLISHED; also CANCELLED, EXPIRED, SUPERSEDED for source changes. Enforce tenant, object owner, reviewer scope, stable source version, optimistic concurrency/fencing, task lease and review deadline; prevent old review decisions being committed to a newly replaced extraction generation.
+
+### 29.2 Versioned correction overlay, not source mutation
+
+The reviewer proposes a typed correction (original element/cell ID, page/byte/box location, old parser result and hash, new text/value/unit/scale/header relation/figure link, reason, signer, source evidence and confidence/decision), preserving the original bytes and original extracted run. A proposed correction is **not** automatically authoritative.
+
+Validated proposals write append-only, human-verified overlays associated with the document version and a correction generation. If financial/regulatory/safety impact or tenant policy requires dual control, an independent authorized approver must approve; the proposer cannot self-approve. A signed/audited publication step advances the **derived/CDM/index generation** using the existing fenced READY cutover (§§15.1–15.2), or creates a new processing revision as needed; **no OCR rerun** if the input asset/recognition text remains unchanged.
+
+Derived retrieval units and index projections update atomically with generation pinning. Invalidate or version-tag affected cached retrieval results, field-specific sanitized renditions, calculation outputs, saved answer dependency records and brief freshness checks. A past calculation result is not silently rewritten; it is re-run or marked for revalidation with the new correction. Partial input data remains excluded until the corrected value passes validation and publication.
+
+### 29.3 UI and permission contract
+
+- Prioritized review inbox with task type, impact, confidence, severity, assigned reviewer, source and dependency count.
+- Side-by-side crop/text/table diff, unit/scale picker, header ancestry, typed numeric preview, required justification, optional second approval, conflict resolution and status history.
+- **Permissions:** document.extraction.review for read workflow, document.correction.propose, document.correction.approve and document.correction.publish; classification/source access still required. Sensitive source reviewer grants are explicit, time-scoped where necessary.
+- **Acceptance:** duplicated reviewer clicks, stale task revisions, concurrent approval, permissions revoked mid-review, rejected scale, cross-window table correction, and OCR replay cannot turn an unapproved value into an active verified input.
+
+## 30. PII/sensitivity classification and secure redaction (v1.4)
+
+### 30.1 Threat model and policy-first classification
+
+Sensitive data includes bank accounts, national identifiers (PAN, SSN, etc.), financial compensation, personal information, medical/incident records, confidential engineering details and tenant-defined entities. During ingestion/NORMALIZING, run an **optional policy-governed detection pass** with exact CDM text spans, PDF/page polygons and image regions, supported by confidence and human review. Detection is fallible; boundaries may be approximate in OCR and diagrams. Keep source confidentiality labels, element/cell classifications, detectors/model/run version and a source-linked **sensitivity_annotations** ledger.
+
+**Egress comes first:** A tenant policy must decide whether the unredacted original may be sent to Azure Foundry/Mistral, Document Intelligence or other cloud processors **before** making that call. Local preflight classification may be incomplete; if policy disallows sending uninspected content, process only with an approved local path or reject/hold for review. Do not claim sensitive data can always be detected before an OCR pass.
+
+Permission to query a collection does not imply permission to view its protected spans. Add confidential.unmasked.read only through explicit resource-scoped grants and required conditions, never automatically for TO/TA/SA/KA roles. Tenant policy can require full-document denial rather than partial sharing for restricted content.
+
+### 30.2 Safe delivery and derivative design
+
+The authoritative original remains immutable and **restricted**. A lower-privilege user receives only a **server-created, policy-versioned sanitized derivative**, never the original with CSS, SVG or black UI rectangles drawn over it. Policy-specific extraction/generation must remove or irreversibly sanitize:
+
+- Text content, extracted OCR strings, PDF selectable text, hidden layers, annotations, metadata and alternate descriptions.
+- Raster images, cached thumbnails, previews, diagrams and crops; raster masks must be irreversible in delivered pixels and checked against underlying text/text-box leakage.
+- HTML/Markdown text/attributes/links, alt text, OCR figure captions, table cells, calculation inputs and exported spreadsheets/PDFs/brief bundles.
+- Query suggestions, lexical index/snippets, text/image embeddings, LLM evidence context, generated summaries, cached responses, MCP outputs, logs and diagnostics.
+
+**Indexing boundary:** An unrestricted embedding created from secret text is not approved for broader search solely because the final answer would be masked. Either build and validate separately sanctioned sanitized retrieval units/index entries for low-privilege scopes, keep restricted content entirely outside that audience's index/candidate set, or deny search at document level. Respect policy revision and tenant/principal scope in cache keys; ACL/redaction revocation requires active invalidation and recheck at final disclosure, not just cache expiry. Apply privacy-aware table aggregation safeguards to prevent deriving a protected single individual's value from small cells or arithmetic differencing.
+
+When reliable sanitization is not possible (ambiguous OCR location, uncropped hidden PDF layer, inaccessible image text, detector low confidence), **fail closed**: withhold that region or the entire document for low-privilege audiences. No UI-only mask or arbitrary inference is acceptable as compliance redaction.
+
+### 30.3 Review, auditing, classification, retention
+
+Sensitivity false positives/negatives route to authorized review tasks with original evidence only for privileged reviewers. Permit tenant administrators/security staff to manage policy *metadata* without acquiring confidential document read. Maintain immutable original and annotation hashes, transformation versions, sanitized asset hashes, approval, effective policy version, lineage and access logs. Recompute derivatives on classification updates, propagate alert/citation dependencies and ensure exports and in-flight SSE stop disclosing newly forbidden material.
+
+Apply retention/legal hold and right-to-erasure policy to originals **and** sanitizer outputs, indexes, caches, query history and verification packages. Track detector quality per language and document type. Security release tests inspect both visual raster and underlying PDF text/extraction layers, prompt injections, raw asset endpoints, image crops, caches, generation context, tool responses, model input, cross-user inference and redaction revocation.
+
+## 31. Collection-level knowledge gaps and abstention analytics (v1.4)
+
+### 31.1 Structured quality outcomes
+
+Emit tenant/workspace/collection-authorized knowledge_quality_events when queries end in abstention, insufficient_verified_data, low_semantic_support, failed source resolution, citation supersession, extraction PARTIAL, retrieval deficiency or permission filtering. Separate these categories:
+
+| Outcome | Interpretation / investigative action |
+| --- | --- |
+| NO_APPLICABLE_EVIDENCE | Candidate corpus might not contain requested material, **not proof a manual is absent** |
+| RETRIEVAL_LOW_RECALL | Documents may exist but indexing/rerank/filters failed |
+| EXTRACTION_INCOMPLETE | Relevant document exists but some OCR/table content is PARTIAL |
+| UNVERIFIED_FIELD | Scale/header/numeric input needs reviewer |
+| STALE_EVIDENCE | Existing cited evidence has a newer potentially applicable version |
+| LOW_CLAIM_SUPPORT | Retrieved evidence does not substantiate answer claim |
+| ACCESS_RESTRICTED | Authorization blocks access; **do not reveal existence, count or topic of inaccessible documents** |
+| AMBIGUOUS_QUERY | Intent/period/version ambiguous, not necessarily missing knowledge |
+
+The collection dashboard clusters recurring **authorized** question topics, per-category trends, review backlog and reprocessing failures, with action suggestions (review extraction, tune search, verify an SOP revision, request an approved upload). Any proposed root cause generated by a model is labeled **hypothesis**, not a confirmed absent document.
+
+### 31.2 Privacy and security boundaries
+
+Aggregate strictly within authorized tenants/workspaces/collections, only from events whose metadata the viewing role can see. Minimize raw prompt retention; redact PII before aggregation, hash/cluster prompts under tenant-specific keys as policy permits and avoid sending user queries to a cross-tenant analytics model. Apply minimum cohort sizes and small-cell suppression, aggregation latency/bucket limits, configured retention and appropriate consent/notice for telemetry in self-hosted installs. Do not leak individual user query content, confidential topics, denied document names or another tenant's usage.
+
+**Permissions:** knowledge_health.read/manage, plus authorized collection scope; KA/TA/TO may view the default tenant-level summarized dashboard where policy allows. Security/audit roles do not automatically receive raw query text. Knowledge-gap alerts are diagnostic and never substitute for verification of document availability.
+
+### 31.3 Dashboard and SLOs
+
+Provide time-series by outcome/collection, top privacy-safe recurring topics, abstention rate, source-quality gaps, reviewer queue lag, stale citation count, extraction coverage, feedback and recommended human actions. Measure trend stability, cluster precision and false "missing document" accusations on a labeled corpus. Link dashboards to *authorized* review or upload workflows; not to anonymous background crawler actions.
+## 32. Definition of done for the architecture
+
+A working platform is acceptable only when (in addition to the established v1.0–v1.3 content, security, provenance and tenancy guarantees):
+
+- When a new READY document version modifies cited evidence, saved answers and immutable Evidence Brief revisions receive an auditable freshness assessment without corrupting original source citations. Confirmed conflicts require applicable authority/effective-date evidence and review, not mere lexical differences.
+- Users can build and publish immutable Evidence Briefs from verified source-backed blocks; an independent offline verifier rejects tampering and labels missing/restricted source artifacts as not fully verifiable.
+- The optional remote MCP server uses delegated/user or tenant-scoped service identity, strict OAuth resource/audience validation, existing RBAC and current redaction policy; no cross-tenant or raw-secret tool disclosure.
+- PARTIAL/UNVERIFIED source data enters a reviewer queue; approved corrections create immutable human-verified overlays and fenced derived re-publications rather than overwriting originals or silently changing prior calculations.
+- Unauthorized users never receive protected content through raw PDF layers, raster crops, metadata, caches, embeddings/search snippets, model context, exports, citations or agent-tool endpoints. Uncertain sanitization defaults to denial.
+- Knowledge-health metrics distinguish absent evidence from OCR, retrieval, authorization and query ambiguity; tenant/private prompt content cannot be reconstructed from aggregate dashboards.
+
+A working platform is acceptable only when
 
 - A self-hosted instance boots, configures its built-in identity, creates its first tenant and performs normal RAG operations without a vendor SaaS control-plane dependency.
 - SaaS and self-hosted builds use the same authorization contracts and domain model; only documented deployment capabilities and operator services differ.
