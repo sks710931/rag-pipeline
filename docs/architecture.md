@@ -1,9 +1,9 @@
 # Enterprise Multimodal RAG Platform — Architecture
 
 > **Status:** Proposed architecture (implementation specification, not a claim of completed functionality)  
-> **Version:** 1.1 — reviewed design; accepted resilience and correctness improvements  
+> **Version:** 1.2 — final design hardening; preserves v1.1 commitments and ADR decisions  
 > **Date:** 2026-10-15  
-> **Revision basis:** *Architectural Review and Optimization Strategy for the Enterprise Multimodal RAG Platform* (19-page review); recommendations classified as adopted, conditional or deferred based on engineering risk and evidence.  
+> **Revision basis:** v1.1 review and *Final Architecture Review* (9 requested hardening changes). Prior adopted/conditional/rejected decisions remain in effect; performance figures are benchmark hypotheses, not guarantees.  
 > **Repository:** sks710931/rag-pipeline  
 > **Target:** Enterprise, hybrid deployment, approximately 10,000 initial documents, multilingual, cloud AI models
 
@@ -154,6 +154,17 @@ Use a per-page classifier before invoking cloud extraction. It inspects native t
 | 1 — Standard cloud OCR | Simple scanned pages | Cheapest **actually deployed, supported** Foundry OCR profile meeting language/quality requirements | Escalate on low OCR coverage, missing blocks, or failed evidence quality |
 | 2 — Complex cloud OCR | Mixed layouts, multilingual text, equations, figures/charts | Capable Foundry-hosted Mistral OCR/Document AI deployment | Validate blocks, coordinates, language, figures and tables; escalate selectively |
 | 3 — Specialist | Forms, merged/borderless tables, precise cell geometry, unresolved conflicts | Azure Document Intelligence in Foundry Tools | Require field/cell verification and source location; mark PARTIAL or review if still unreliable |
+
+#### Route 0: native text-layer integrity admission (v1.2)
+
+A high native-text density **does not** prove correct PDF text. Legacy scanners can embed an invisible/broken OCR layer; CAD exports can use unusual glyph encodings. Before accepting Route 0, run a lightweight, deterministic diagnostic profile:
+
+- **Unicode/glyph sanity:** count U+FFFD replacement characters, suspicious private-use/control glyphs, unmapped glyphs, repeated gibberish patterns and encoding anomalies, relative to eligible extracted text. Inspect PDF font mapping quality and available `ToUnicode` CMaps where technically exposed. Absence of `ToUnicode` is a **signal**, not automatic proof of corruption: valid text may map via other mechanisms; mathematical symbols or non-Latin scripts need script-aware assessment.
+- **Source visibility and overlap:** compare low-resolution page ink/connected components (e.g. configurable 72-DPI render) with native text bounding regions to detect visible textual regions without corresponding reliable text. **Exclude or separately classify** diagrams, bitmap photographs, vector graphics, whitespace and decorative elements; visual ink alone is not OCR evidence.
+- **Text/content agreement:** flag hidden duplicated OCR layers, implausibly sparse native text on text-heavy raster pages, broken reading order and mismatches between actual glyph renderings and extracted text. Escalate uncertain regions to cloud OCR (Routes 1/2), with selective sampling on apparently clean pages.
+
+The suggested 0.5% replacement-character and 72-DPI values from the final review are **candidate diagnostics**, not hard-coded safety cutoffs. Calibrate per PDF type, language and script using a labeled gold corpus, record each trigger and false-positive/false-negative rates, and make fail-safe escalation explicit. A valid text layer can coexist with figures that still need independent visual extraction.
+
 
 The router selects **a suitable available deployment** by quality, policy, quotas and *current regional meter*; it must not depend on legacy or retired model identifiers listed in the review. Classifier thresholds and routing shares are empirical configuration, not presumed 60/20/15/5 percentages. To avoid silently treating a native text layer as complete, test small sampled/flagged regions against cloud extraction and record misses.
 
@@ -396,9 +407,46 @@ Document content, CDM JSON, OCR responses, page images, offset maps and vector b
 
 **Retention race:** never delete the referenced object when the consumer finishes. Keep it through broker redelivery/recovery, dependent runs and required audit retention. Garbage collection is a separate audited workflow that checks final status, dependency graph, retention/legal holds and absence of active leases. Failures go to bounded retry and a diagnosable dead-letter queue, with an administrative replay operation.
 
-### 7.2 Page-level checkpoints and budget-aware retry (adopted)
+### 7.2 Checkpoint granularity and budget-aware retry (refined in v1.2)
 
-Persist per-page `PENDING / IN_PROGRESS / COMPLETE / PARTIAL / FAILED / SKIPPED` status, provider/model/run metadata, quality diagnostics, global page ordinal, segment ranges, source/result asset hashes, per-call cost metadata and lease/fencing token. Recover after a crash by reconciling authoritative page manifests, not by assuming a provider request committed. Record external request IDs to detect potential duplicate billing and avoid unnecessary new calls. Checkpoint and stage page results before completion events. Test mixed 150-page PDFs, page-window table stitching, 429/timeout recovery, and zero missing/duplicated pages.
+**Cloud OCR/vision (Routes 1–3):** Persist per-page `PENDING / IN_PROGRESS / COMPLETE / PARTIAL / FAILED / SKIPPED` status, provider/deployment/request ID, global page ordinal, run/profile hash, attempt fencing token, quality diagnostics, source/result asset hashes, accumulated cost and retry metadata. A provider call may be billed even if it times out: do not assume retry is free. Checkpoint stage output and page/result manifests before acknowledgement; resume incomplete page windows and reconcile possible duplicate requests.
+
+**Local native PDF (Route 0), Markdown, plain text and deterministic local HTML:** Default to **document-level or bounded-batch checkpoints** with immutable manifest entries rather than one PostgreSQL row transition per page. Escalated cloud pages subsequently receive granular cloud checkpoints. For unusually expensive native tasks, tune local batch size and checkpoint frequency from measured recovery cost; never lose page/global-offset traceability.
+
+In both routes, the worker first proves lease ownership and commits through the fencing/CAS protocol (§7.3). Recovery reconstructs work from authoritative manifests, never from broker delivery count. Test mixed 150-page PDFs, partial cloud retries, source-global-page stitching, table continuation, local worker crashes and missing/duplicated page detection.
+
+### 7.3 Enforced monotonic fencing and conditional writes (I1 correctness invariant)
+
+**A broker lock is not the authoritative lease.** A redelivered job can leave an older process running; `deliveryCount` alone is **not** a fencing token. Keep a PostgreSQL-authoritative, per-stage lease record with `lease_epoch BIGINT` (monotonically incremented in a transaction on acquire/takeover), `owner_attempt_id`, `expires_at`, `status` and an optimistic row version. Workers receive their expected epoch when acquiring the lease.
+
+Every stage status/checkpoint mutation must compare **`processingRunId + stageId + lease_epoch + owner_attempt_id`** (and tenant/version scope) and succeed only while the lease is current. Reject zero affected rows as **stale writer**, not success. Representative compare-and-swap, inside a transaction with appropriate row locking/clock policy:
+
+~~~sql
+UPDATE stage_leases
+SET status = 'COMPLETE', updated_at = now()
+WHERE processing_run_id = @runId
+  AND stage_id = @stageId
+  AND owner_attempt_id = @attemptId
+  AND lease_epoch = @expectedEpoch
+  AND expires_at > now()
+  AND status = 'IN_PROGRESS';
+-- Exactly one updated row is required; otherwise abort publication.
+~~~
+
+A consumer must **not** check ownership, release its lock, and later write without a guarded transaction; use conditional writes against the authoritative stage lease for the actual data rows and subsequent state transitions. PostgreSQL writes that commit CDM elements/manifests must be guarded in the same transaction by the current epoch and attempt. For multi-table bulk staging, use an attempt-scoped staging namespace and a final fenced merge/publish operation; an expired writer can at most leave unreachable staging data.
+
+Store derived Blob objects under immutable `runId/attemptId/contentHash` paths, with create-only conditional upload (`If-None-Match: *`) or appropriate storage lease/precondition. **Do not allow overwrite of shared mutable output paths.** Object creation alone does not grant authority to publish: only the winning fenced attempt's verified artifact hashes may be linked by a guarded PostgreSQL transaction. Apply the same check when publishing page manifests, completion messages and the active document/index generation (§15.1). Reconcile stale artifacts asynchronously, respecting claim-check retention and active query leases.
+
+Acceptance tests must pause Worker A past lease expiry, let Worker B finish and publish, then resume A: all of A's stale PostgreSQL writes and active publication must fail; its blob output must never replace B's evidence.
+
+### 7.4 Tenant-fair outbox scheduling and coordinated OCR backpressure (I1/I2)
+
+Use distinct **priority classes** for interactive/small tasks and bulk ingestion, while retaining per-document or per-stage causal order. Lease outbox rows transactionally with bounded batches (e.g. PostgreSQL `FOR UPDATE SKIP LOCKED`), then dispatch using per-tenant quotas/weighted round-robin and aging so neither a large tenant nor nonstop high-priority traffic starves other queues. Query audit events must remain durable and not depend on bulk-ingestion throughput. Define publisher recovery, duplicate publication and poison-message behavior explicitly.
+
+Cloud OCR queues are also globally subject to **provider + deployment + region rate/concurrency budgets**, not only each Python worker's private retry counter. Use a coordinated token-bucket/backoff state (durable PostgreSQL coordinator initially; optionally Redis/managed rate limiter when justified), enforce a shared concurrency limit, observe `Retry-After`, and pause/reduce dispatch on provider-wide 429/503 or outage signals. Retain per-tenant usage/budget guards and avoid a retry storm when multiple replicas restart.
+
+Broker ordering, distributed token-bucket accuracy and fairness depend on implementation; validate under 5,000-document bulk uploads, parallel workers, provider throttling, malformed work items and lease loss. Scheduling cannot bypass authorization, fencing or the immutable artifact contract.
+
 
 ## 8. Persistent data model
 
@@ -416,10 +464,10 @@ PostgreSQL is the system of record; use UUID/ULID identifiers consistently and d
 | element_relationships | Typed element-to-element relations |
 | evidence_locators | PDF polygons, DOM anchors, image regions, Markdown/text line and offset ranges |
 | assets | Immutable binaries, size/hash/type, original/derived classification |
-| extracted_tables, table_rows, table_cells | Cell spans, headers/captions, original literal, raw/normalized decimal values, inherited scale/unit/currency and evidence locators |
+| extracted_tables, table_rows, table_cells, table_cell_header_links | Cell spans, hierarchical column/row headers and element evidence, original literal, raw/normalized decimal values, inherited scale/unit/currency and locators |
 | retrieval_units, retrieval_unit_elements | Search text/metadata and exact underlying element membership |
 | embedding_profiles, index_generations, index_entries | Provider/model settings, vector IDs, generation/version and state |
-| processing_runs, processing_events, page_processing_states, job_outbox | Input profile, per-page checkpoints/costs/leases, verified artifact references and durable workflow |
+| processing_runs, processing_events, stage_leases, cloud_page_processing_states, job_outbox | Input profile, epoch/attempt-fenced stage ownership, cloud-page checkpoints/costs, verified artifact references and durable workflow |
 | conversations, queries, answers | Query/answer versions and provenance |
 | answer_claims, answer_citations | Evidence-backed claim references and semantic support verification |
 | calculation_runs, calculation_inputs | Authorized deterministic expression, contributing input values and result |
@@ -431,6 +479,7 @@ PostgreSQL is the system of record; use UUID/ULID identifiers consistently and d
 - A document version is immutable once published. A new upload/revision creates a new version ID.
 - The logical document points to one active READY version. Never point it to an incomplete index generation.
 - Each retrieval unit maps to one or more CDM element IDs; each index entry records its source retrieval unit and generation.
+- Persisted processing work is attempt-fenced: `stage_leases.lease_epoch` increments on takeover, stale attempt writes must fail through guarded database writes, and binary derivatives are write-once/attempt-scoped; only the current attempt may publish.
 - Store exact-value table cells using NUMERIC/decimal fields plus original literal, locale, unit/currency, **source scale and normalized magnitude**, source header/caption evidence and verification state; no floating-point arithmetic for money.
 - Evidence locators have format-specific validation (PDF page bounds; image pixel bounds; Markdown/text valid source span and encoding; HTML snapshot/anchor existence).
 - Answers link claims to authorized, resolvable evidence IDs, never opaque arbitrary URLs.
@@ -458,6 +507,16 @@ numeric_verification     TEXT NOT NULL
 For Markdown/text citations, the canonical original offset map remains a durable object; optional compressed line-start offsets (byte/code-point) in PostgreSQL or a bounded cache reduce repeated blob fetches. Introduce this cache after measuring citation lookup latency, and validate cached data against the original version/normalization hash.
 
 **Partitioning policy:** implement tenant-scoped composite keys, tenant-filtered indexes and observable slow-query plans from I1. PostgreSQL partitioning by tenant/hash or document/version is an *evaluated scaling option* when real cardinality and explain plans warrant it; partitioning at ingestion start is not a correctness dependency, and naïve per-tenant partitions may create serious operational overhead.
+
+### 8.1.2 Hierarchical table headers and cell-level provenance (v1.2)
+
+Do **not** flatten a stacked header into a single label or depend on one `scale_source_element_id`. Represent the table header structure as CDM elements with `rowspan`, `colspan`, structural parent/child or `header_for` links, reading order and source locators. A data cell may inherit **multiple row and column ancestors** (year, quarter, audit status, unit scale, row category).
+
+Provide a relational `table_cell_header_links` mapping `(tenant_id, table_cell_id, header_element_id, axis, level, path_order, relation_type)` to the original verified header elements. Optionally materialize `column_header_path TEXT[]` and `row_header_path TEXT[]` on the cell/read model **as derived indexes**, not substitutes for source-element references. Source evidence also records whether a header is parsed, AI-inferred or human-verified.
+
+Example for a cell: column path `['FY 2025', 'Q2', 'Audited', 'INR Crores']`; row path `['Revenue', 'Domestic']`. Typed dimensions (`fiscal_year = 2025`, `quarter = 2`, `audit_status = 'Audited'`) are derived from validated header ancestry, not unreviewed string comparisons. Propagate units/scale from the **correct branch**, apply precise precedence for cell/column/row/table/footnote declarations, and mark conflict or ambiguity `UNVERIFIED_HEADER` / `UNVERIFIED_SCALE`.
+
+Acceptance: stacked/multi-row/merged headers, bilingual labels and partial continuation tables preserve all header relationships; filtering by audited quarter and summing normalized values returns precisely the authorized, verified source cells.
 
 ### 8.2 Binary object layout
 
@@ -516,6 +575,18 @@ Qdrant and lexical indexes are rebuildable projections. Index entries store tena
 Define `IAuthorizationPolicyResolver` with `CheckAsync` and `ListAccessibleResourcesAsync` operations. Begin with PostgreSQL-backed resource grants/RLS plus short-lived, invalidatable permissions; keep OpenFGA as an **optional** implementation after measured requirements justify ReBAC graph traversal. Avoid claiming instant propagation or sub-millisecond checks: consistency, cache behavior, permission graph size and list-object latency are observable SLO concerns.
 
 The retrieval planner obtains an authorized, version-pinned document/collection scope from this provider and applies tenant + indexed structural filters as early as practical. It then verifies each candidate before model-context inclusion and reauthorizes on evidence/asset delivery. Measure Recall@K under real mixed-permission filters, authorized-set cardinality and revocation races. No optimization may expose cross-tenant material.
+
+#### Cardinality-aware permission-safe query planning (v1.2)
+
+Do not serialize thousands of allowed document/version IDs into every Qdrant request by default. Use a planner with **validated, exhaustive** permission-scope alternatives and configurable thresholds derived from filter bytes, cardinality, CPU time and recall measurements:
+
+1. **Broad collections:** only when the principal is genuinely authorized for the collection, use indexed `tenantId + collectionId` filters, with any complete, explicitly resolved per-document deny/override exclusions (`must_not`) and separate union branches for explicit document grants. A broad collection filter **without correct exceptions** is forbidden. When exclusions are huge or authorization cannot be enumerated exactly, this plan is ineligible.
+2. **Small document scopes:** use explicit bounded document/version ID filters (the review's ~500 is a tuning hypothesis, **not** a fixed boundary).
+3. **Mixed or very large scopes:** decompose into bounded disjunctive branches or select an alternative index/overfetch plan supported by authoritative permission checks. Do not silently truncate allowed IDs. If a safe efficient plan is not available, fail closed with a diagnosable policy/planner limitation rather than executing an unauthorized search.
+4. **Active-version pinning:** broad collection prefilters alone may return stale generations. Enforce the query-pinned `activeVersionId + indexGenerationId` set at candidate resolution and before LLM input; expand/requery when stale or denied candidates reduce recall. Permission revocation invalidates accessible candidates even if payload/index updates lag.
+
+Index the tenant, collection, document, version and generation structural payload fields. Benchmark collection-level scopes, explicit grants, negative overrides, 500/5,000/8,500-document scopes, the serialized filter size, p95 latency, Recall@20, and concurrent revocation. Do not equate prefilter efficiency with final security: **zero unauthorized evidence may reach the model or client**.
+
 
 ### 9.2.2 Advanced retrieval alternatives (benchmark-gated)
 
@@ -581,9 +652,26 @@ Do not silently calculate across incompatible currencies/units or ambiguously OC
 
 ### 10.1 Inherited units and numerical magnitude (adopted)
 
-During normalization, parse table-level titles, adjacent notes, headings, footnotes and column headers for declarations such as "USD in thousands", "₹ crores", "millions", or "%". Link every normalized cell value to **the actual header/caption/footnote source element** that establishes its scale and currency. Verify precedence when cell, column and table-level declarations differ. Materialize normalized values only after type, scale, currency and unit validation; explicitly mark ambiguous cells `UNVERIFIED_SCALE`.
+During normalization, traverse **the full column and row header hierarchies (§8.1.2)** along with table-level titles, adjacent notes, headings and footnotes for declarations such as "USD in thousands", "₹ crores", "millions", or "%". Link every normalized cell value to **the actual header/caption/footnote source element** that establishes its scale and currency. Verify precedence when cell, column and table-level declarations differ. Materialize normalized values only after type, scale, currency and unit validation; explicitly mark ambiguous cells `UNVERIFIED_SCALE`.
 
 The analytics compiler excludes unverified values by default and returns them in `excluded_records` with reasons and evidence IDs. A request requiring complete totals must return `partial_result` or `insufficient_verified_data` if any material input is excluded; it must not present a partial sum as a complete total. Test mixed "units / thousands / crores", percentages, local decimal separators, signs and cross-document currency mismatches.
+
+### 10.2 Resource-bounded read-only analytics sandbox (v1.2)
+
+A typed/parameterized query can still execute a pathological join or aggregation. Restrict the analytics compiler to approved tables/columns, bounded predicates, joins and aggregation shapes; validate per-tenant authorized records and verified units before execution. Prohibit arbitrary SQL, functions, DDL and model-generated code execution.
+
+Run calculations under a **dedicated least-privilege, read-only PostgreSQL role and connection pool** (read replica/isolated analytics store is optional after load tests). Every request runs inside an explicit read-only transaction with tenant/RLS context and configured statement, lock, memory, temporary-file, row/result and concurrency limits; use query-plan budget checks for expensive cross-table operations. Illustrative per-transaction limits (tune against real workloads, not guarantees):
+
+~~~sql
+BEGIN TRANSACTION READ ONLY;
+SET LOCAL statement_timeout = '3s';
+SET LOCAL lock_timeout = '250ms';
+SET LOCAL work_mem = '16MB';
+-- Execute only a compiler-validated, parameterized SELECT.
+COMMIT;
+~~~
+
+Server-enforced admission and output limits remain necessary: `work_mem` is applied per eligible executor node and does **not** cap total query memory. A timeout or rejected plan returns an explicit `resource_limit` / partial result with safe diagnostics; it must never be silently reinterpreted as "no data". Profile and audit query time, intermediate rows, spill, input-cell count, results and tenant. Test permission and RLS isolation independently of performance.
 
 ## 11. Grounded answer and citation contract
 
@@ -639,7 +727,17 @@ Citation links open exact immutable source versions. Historical citations remain
 
 SSE may begin immediately for `query_started`, `retrieval_progress`, `evidence_found`, `verification_progress` and heartbeat events. However, **do not render raw, unverified factual LLM token deltas as an authoritative answer**, even with a provisional badge.
 
-Server processing for each typed block: generate candidate block -> resolve the cited evidence IDs -> enforce current authorization, locator and type checks -> validate claim support against evidence (or deterministic calculation provenance) -> emit `answer_block_verified` carrying a stable ordered block ID and full authorized citation data. Only verified blocks are appended to the answer display. On failure, regenerate, downgrade to an explicit warning, or abstain; never stream an unsupported block and retract it later. The server can pipeline generation/verification of separate blocks, but must preserve deterministic block ordering and query-version pinning.
+Server processing for each typed block: generate candidate block -> resolve the cited evidence IDs -> enforce current authorization, locator and type checks -> validate claim support against evidence (or deterministic calculation provenance) -> validate the dependency graph -> emit `answer_block_verified` carrying a stable ordered block ID and full authorized citation data. Only verified blocks are appended to the answer display. On failure, regenerate, downgrade to an explicit warning, or abstain; never stream an unsupported block and retract it later. The server can pipeline generation/verification of separate blocks, but must preserve deterministic block ordering and query-version pinning.
+
+**Cross-block logical consistency (v1.2):**
+
+- Generate **self-contained blocks** by default: no dangling pronouns, unsupported "as noted above", or conclusions that require a hidden/failed statement.
+- Model each candidate's `dependsOnBlockIds` and `verificationGroupId` in the internal answer contract. Verify a **dependency closure**: a block is releasable only if every referenced earlier block is authorized, successfully grounded, and either already committed or committed atomically with it.
+- Treat connected prose, a numerical conclusion with its prerequisite calculation, or multi-block reasoning as one **atomic verification/commit group** where independence cannot be guaranteed. Images, tables and citation cards may be independently released only when semantically self-contained.
+- If any member of an uncommitted group fails, **withhold the entire group**, regenerate from currently validated evidence or output one verified warning/abstention. Never expose dependent Block 3 after suppression of Block 2.
+- Commit event groups in deterministic sequence order. For independently verified blocks already emitted, later failures must not silently alter their source meaning; retain pinned version/authorization requirements throughout.
+
+Acceptance: simulate a suppressed middle paragraph, failed prerequisite table calculation, modified evidence and mid-stream revocation. No released block may contain a dangling reference to a rejected/uncommitted block, and no unverified claim becomes visible as an authoritative answer.
 
 Client protocol: `query_started`, `progress`, `answer_block_verified`, `warning`, `query_completed`, `query_failed`. Events carry sequence IDs, schema versions and query IDs; reconnect/resume behavior must not duplicate or reorder blocks. If authentication or document access is revoked mid-stream, abort/suppress further protected blocks. Semantic grounding is a graded assessment rather than proof of absolute truth; track unsupported-claim and abstention rates.
 
@@ -728,6 +826,12 @@ Record parser/model failures by stage; never claim partial OCR/visual coverage i
 
 An evidence citation can only resolve while its retained immutable source exists and caller authorization permits it. For deletion/legal erasure, revoke reads first; expired/removed historical versions must return an explicit `source_unavailable` rather than claiming permanent availability.
 
+### 15.2 Fenced publication on stage and index cutover (v1.2)
+
+The v1.1 READY transaction in §15.1 is necessary but **must be conditional on the still-current stage lease epoch and expected active document pointer**. The winning processing attempt stages its vector generation and immutable object manifests, verifies completeness, and executes one fenced compare-and-swap transaction that (a) proves ownership/epoch is current, (b) confirms the previous `activeVersionId/activeIndexGenerationId` matches the expected pointer or configured conflict resolution rule, and (c) promotes the new READY pointer plus durable outbox event. If any condition fails, do not publish; leave attempt outputs unreachable for reconciliation. This prevents a stale worker or competing reindex from rolling back a newer generation.
+
+Do not bind correctness to wall-clock lock expiry alone: durable monotonic fencing identifies the latest owner. Use attempt-scoped object keys and conditional writes so stale workers cannot overwrite stage artifacts. GC must respect active query leases, outbox redelivery, retention and legal holds. Test stale worker publication after lease loss and simultaneous competing revisions.
+
 ## 16. Evaluation and acceptance gates
 
 Build a labeled dataset of 300–500 representative multilingual queries, spanning PDFs, HTML, figures, engineering drawings, Markdown, plain text, scanned tables, cross-document comparisons, exact numeric questions, and forbidden-access probes. Include gold evidence locators and answer requirements.
@@ -749,12 +853,30 @@ Build a labeled dataset of 300–500 representative multilingual queries, spanni
 | Version comparison | Added/removed/modified element recall and bilateral provenance | Measured per document class; acceptance thresholds set by gold suite |
 | Answer streaming | Unverified factual blocks visible as final answer | 0 |
 | Markdown/text citations | Correct original line/span resolution | 100% |
+| Fencing | Stale worker stage/result/READY writes accepted after lease takeover | 0 |
+| Fair scheduling | Tenant bulk traffic starving an unrelated permitted small ingestion | 0 in specified load-test window |
+| OCR local admission | Corrupt/hidden native text escaping diagnostic escalation | Track false negatives by script/PDF class; thresholds calibrated |
+| Header hierarchy | Lost stacked row/column headers or unverified-scale aggregate | 0 in gold suite |
+| Permission scope planning | Unauthorized context and unbounded/truncated filter lists | 0; recall/latency measured at broad and narrow scopes |
+| Verified streaming | Dangling block dependencies reaching final UI | 0 |
+| Analytical sandbox | Unbounded query resource usage / timed-out query reported as empty result | 0 under fault tests |
 
 These are **targets, not measured performance or universal guarantees**. Evaluate per language, format and document difficulty; publish failure/abstention rates separately. Use golden files for source-offset reconstruction (especially Markdown CRLF, Unicode, BOM, tabs, footnotes, tables, code fences and relative links).
 
-Automated resilience tests: worker crash at each stage; duplicate delivery; oversized CDM (> broker limit) through claim-check; artifact retry/GC race; same-file concurrent upload; malformed document; 150-page mixed PDF page splitting and stitched multi-page tables; OCR 429/413/timeouts and potential duplicate billing; unavailable embedding/model provider; revoked permissions mid-query; permission-filtered recall; staged index cutover and in-flight leases; missing original asset; concurrent reprocess; mixed scale financial tables; re-ordered/removed version sections; tombstone during active streaming; unsupported claim suppression; HTML/Markdown XSS/prompt-injection payloads.
+Automated resilience tests: duplicate leases and monotonic fencing with paused/stale writers; outbox fair-share under 5,000 bulk uploads; cross-replica 429/Retry-After coordination; multi-header table and scale inheritance; rejected middle-answer block with dependent conclusion; native PDF hidden OCR layer/glyph and visual-text mismatch; cardinality-aware Qdrant filtering with grants/denies; analytics timeout/memory/row limits; worker crash at each stage; duplicate delivery; oversized CDM (> broker limit) through claim-check; artifact retry/GC race; same-file concurrent upload; malformed document; 150-page mixed PDF page splitting and stitched multi-page tables; OCR 429/413/timeouts and potential duplicate billing; unavailable embedding/model provider; revoked permissions mid-query; permission-filtered recall; staged index cutover and in-flight leases; missing original asset; concurrent reprocess; mixed scale financial tables; re-ordered/removed version sections; tombstone during active streaming; unsupported claim suppression; HTML/Markdown XSS/prompt-injection payloads.
 
 Track ingestion throughput and p95 latency, source coverage, bad/missing asset references, retrieval Recall@K/nDCG, claim support, citation resolution, per-query tokens/cost, queue age, retries and tenant-level errors. Establish latency SLOs only after realistic load tests.
+
+### 16.1 Performance experiments — decisions, not guaranteed numbers
+
+| Optimization | Baseline and alternative | Required observations before adoption |
+| --- | --- | --- |
+| **Local ONNX/heuristic intent routing** | Existing cloud/configurable intent routing versus lightweight local rules or ONNX | Per-language intent F1, uncertainty/fallback, cold/warm p50/p95, CPU/memory, overall query latency and total provider cost |
+| **Local ONNX semantic support/NLI** | Existing configurable grounded verification versus locally hosted candidate verifier | Factual entailment precision/recall, multilingual and long-document support, numeric/diagram failure modes, abstention rates, cold/warm p95, false-positive harm; **never** treat model score as formal proof |
+| **PostgreSQL Binary COPY** | Transactional batched INSERT/ORM versus validated/staged `NpgsqlBinaryImporter` or psycopg `COPY` | Throughput, WAL/I/O, indexing/constraint cost, transactional rollback/retry and correctness of tenant IDs, element relations and provenance |
+| **Multiprocess PDF analysis/rendering** | Sequential/native batch processing versus **independent-process** document/page work | Pages/sec, peak memory, startup cost, ordering/offset correctness, worker crash recovery and scaling; **do not share PyMuPDF document objects between threads** |
+
+No "<15 ms", "15–30 ms", "<80 ms", "10x" or cache-hit target from the external review is an architecture guarantee. Adopt a faster implementation only if it preserves evaluation gates for evidence quality, authorization, source offset fidelity, reproducibility and recovery. Running local ONNX is optional and does not change the chosen default cloud AI strategy.
 
 ## 17. Capacity and hybrid deployment
 
@@ -771,25 +893,27 @@ Run ingestion asynchronously with backpressure, quotas, provider retry budgeting
 ### I1 — Platform foundations
 - Repository structure, architecture decision records, contracts, Docker stack and CI.
 - OIDC tenant-aware auth, collection/document metadata, upload sessions, immutable originals and versioning.
-- Durable queue/outbox using **claim-check-only messages (target <=16 KiB)** with content-hashed immutable artifacts, processing leases, idempotency, retention and replay.
+- Durable queue/outbox using **claim-check-only messages (target <=16 KiB)** with content-hashed immutable artifacts, **database-enforced epoch fencing**, idempotency, retention and replay.
+- Add **tenant-fair priority outbox scheduling** with SKIP LOCKED claims, recovery and bounded starvation; establish shared provider budgets/throttling interfaces.
 - Add `IAuthorizationPolicyResolver` and PostgreSQL-backed tenant/collection/document checks; design structural scope filtering for future Qdrant indexes. OpenFGA remains optional.
 - Record active version/index generation, staged/durable publication and revocation-first deletion contracts.
-- **Gate:** repeated delivery and worker crashes preserve artifacts; large extraction payloads never enter the broker; tenant isolation and revocation hold under tests.
+- **Gate:** repeated delivery and worker crashes preserve artifacts; expired Worker A cannot overwrite/publish after Worker B takes over; large extraction payloads never enter the broker; competing outbox tenants get fair service; tenant isolation and revocation hold under tests.
 
 ### I2 — Canonical extraction and provenance
 - CDM v1, typed element relationships, exact evidence locators and immutable source-derived assets.
 - Configure Foundry Mistral OCR and Azure Document Intelligence separately; verify deployed endpoint identity, quotas, auth, page/file limits, request shape and pricing.
-- Implement **adaptive native/standard/complex/specialist OCR routing**, deterministic page-window batching, per-page checkpoints, selective retry/fallback and cross-window table continuation checks.
+- Implement **adaptive native/standard/complex/specialist OCR routing**, including native ToUnicode/glyph and visual-text integrity diagnostics; deterministic page-window batching, **cloud page-level vs local batch/document-level checkpoints**, selective retry/fallback and cross-window table continuation checks.
+- Coordinate cloud OCR rate limits and backoff across worker replicas by deployment/region and tenant.
 - PDF native/OCR/table/figure parsing with quality/coverage manifests; Markdown AST/line spans and TXT encoding/newline offsets.
 - Optional hot line-offset cache (backed by immutable offset maps), original source viewers and extraction inspector.
-- **Gate:** a 150-page mixed PDF survives batch failures with correct global page citations and cross-page tables; source spans remain exact; costs and routing are observable.
+- **Gate:** a 150-page mixed PDF survives batch failures with correct global page citations and cross-page tables; broken/hidden text layers escalate correctly; local parsing does not require gratuitous per-page DB writes; shared throttles prevent coordinated retry storms; costs and routing remain observable.
 
 ### I3 — Grounded hybrid RAG
 - Retrieval units, text embeddings, lexical index, Qdrant and fused/reranked retrieval.
-- Authority-based permission resolution, tested prefiltered structural scopes, access checks before LLM context and again at evidence/asset delivery; version-pinned read paths.
-- Citation and semantic-support validation; **verified-block SSE** and immediate progress events, never unverified factual token display.
+- Authority-based permission resolution, **cardinality-aware Qdrant plans** for collection-wide grants, explicit overrides and bounded document scopes; access checks before LLM context and again at evidence/asset delivery; version-pinned read paths.
+- Citation and semantic-support validation; **verified-block SSE with dependency-closed atomic groups**, immediate progress events and no unverified factual token display.
 - Validate staged index generations against manifests and atomically promote READY with drain leases and reconciler.
-- **Gate:** citation/grounding tests pass, unauthorized content is never exposed, revoked access fails closed and no partial indexes are queryable.
+- **Gate:** citation/grounding tests pass; no leaked/dangling dependent block survives a rejected middle block; permission scopes with many document IDs retain tested recall without leaking access; revoked access fails closed and no partial indexes are queryable.
 
 ### I4 — Full multimodal + HTML
 - Standalone image parsing, OCR, vision descriptions, true cloud multimodal embeddings and image-image queries.
@@ -798,15 +922,16 @@ Run ingestion asynchronously with backpressure, quotas, provider retry budgeting
 - **Gate:** visual queries display authorized originals and correct source locators; HTML/Markdown are safe to render; report per-modality recall/latency/cost.
 
 ### I5 — Tables, comparisons, multilingual
-- Cell-level typed extraction with caption/header unit and magnitude inheritance; `UNVERIFIED_SCALE` handling, exact NUMERIC calculations and exclusion provenance.
+- Cell-level typed extraction with **multi-level row/column header paths and source-element relations**, caption/header unit and magnitude inheritance; `UNVERIFIED_SCALE`/`UNVERIFIED_HEADER` handling, exact NUMERIC calculations and exclusion provenance.
+- Execute analytics with a **dedicated read-only role/transaction, validated query plan and bounded statement/memory/row budgets**.
 - **Structural CDM/AST alignment before LLM synthesis** for cross-version comparisons, including added/deleted/moved clauses and bilateral source evidence.
 - Language-aware indexing, code and Markdown quality improvements.
-- **Gate:** all gold-suite verified calculations are exact, uncertain scales cannot silently corrupt totals, diff classes and citations pass evaluation.
+- **Gate:** all gold-suite verified calculations are exact across stacked FY/quarter/audit headers; uncertain scales cannot silently corrupt totals; expensive analytics fail explicitly within budgets; diff classes and citations pass evaluation.
 
 ### I6 — Enterprise readiness
 - Enterprise policies, audit/retention, model egress controls, backups/restore, production Azure deployment and SLOs.
 - Load tests for permission-scope filters, vector footprint, ingestion throughput, OCR cost, cold/hot query latency and massive document tables.
-- **Benchmark-driven ADRs:** OpenFGA ReBAC, PostgreSQL partitioning, vector quantization/oversampling/rescoring, hosted late-interaction models, selective prompt caching and model tiers. Adopt only where benefit outweighs complexity.
+- **Benchmark-driven ADRs:** OpenFGA ReBAC, PostgreSQL partitioning, vector quantization/oversampling/rescoring, hosted late-interaction models, selective prompt caching and model tiers. **Separately benchmark local ONNX routing/NLI, bulk PostgreSQL COPY and multiprocess PDF rendering** against quality, correctness and cost baselines. Adopt only where benefit outweighs complexity.
 - Recovery/security testing, operational dashboards and release gates.
 - **Gate:** measured isolation, extraction, retrieval, citation, availability, cost and disaster-recovery targets pass.
 
@@ -881,6 +1006,15 @@ The directory tree is **proposed**, not a claim that the project is already impl
 | ADR-016 | Verify factual answer blocks before streaming; SSE progress does not imply answer validation |
 | ADR-017 | Authorization abstraction; benchmark OpenFGA; no mutable principal ACL lists in vector payloads |
 | ADR-018 | Benchmark late-interaction visual search, quantization, partitioning and caching before mandatory adoption |
+| ADR-019 | Monotonic database lease fencing, guarded writes and conditional staged publication |
+| ADR-020 | Tenant-fair outbox scheduling and centrally coordinated provider quotas/backoff |
+| ADR-021 | Native PDF text-layer glyph/Unicode/visual integrity admission; calibrated escalation |
+| ADR-022 | Cloud OCR/vision per-page checkpoints; native deterministic work batch/document checkpoints |
+| ADR-023 | Cardinality-aware, override-correct Qdrant scope planning and active-version enforcement |
+| ADR-024 | Self-contained answer blocks, dependency graph and atomic verified group publication |
+| ADR-025 | Multi-level row/column header evidence and derived typed dimensions for analytics |
+| ADR-026 | Read-only, cost/resource-bounded deterministic table query execution |
+| ADR-027 | ONNX verification/routing, COPY and multiprocess PDF work are benchmark-gated alternatives |
 
 Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incremental sync, human annotation workflows and knowledge-graph features without changing the core provenance contracts.
 
@@ -904,6 +1038,24 @@ Later extensions can add DOCX/PPTX/XLSX, Git repositories, remote crawlers, incr
 
 This disposition is an engineering decision informed by the supplied 19-page review; it does not claim that its numerical benchmarks or deployment observations have been reproduced in this repository.
 
+### 20.2 Final review disposition (v1.2)
+
+All nine user-selected final review refinements are incorporated into the base architecture and milestones:
+
+| Review item | Disposition | Enforcement milestone |
+| --- | --- | --- |
+| Monotonic fencing + conditional publication | **Mandatory** | I1; index publication in I3 |
+| Tenant-fair outbox + shared provider throttling | **Mandatory** | I1 / I2 |
+| Native PDF text-layer integrity checks | **Mandatory quality gate; calibrated thresholds** | I2 |
+| Cloud page-level vs local batch-level checkpoints | **Mandatory differentiated checkpoint policy** | I2 |
+| Cardinality-aware permission-safe Qdrant plans | **Mandatory, benchmarked thresholds** | I3 |
+| Block dependencies and atomic grounding | **Mandatory verified streaming correctness** | I3 |
+| Multi-level row/column header provenance | **Mandatory CDM/schema support** | I2 schema; I5 analytics |
+| Read-only resource-bounded analytics | **Mandatory** | I5 |
+| ONNX, COPY, multiprocess PDF alternatives | **Evaluation required; adoption conditional** | I6, with earlier representative microbenchmarks |
+
+No existing v1.1 architecture decisions are revoked. Previously deferred OpenFGA, ColPali/MUVERA, quantization and partitioning remain optional, benchmark-driven. Review-specific latency/throughput and price figures are **not** production SLOs or guaranteed improvements.
+
 ## 21. Definition of done for the architecture
 
 A working platform is acceptable only when:
@@ -918,7 +1070,10 @@ A working platform is acceptable only when:
 - Reliability, security and retrieval quality gates are automated and measured.
 - Cloud OCR requests respect verified deployment page/byte limits, resume from page checkpoints, and preserve global source geometry across batches.
 - Message redelivery after a worker crash can resolve claim-check artifacts without embedding large document payloads in broker messages.
-- Query-visible answer blocks are citation-validated before display, while progress can stream immediately.
+- Query-visible answer blocks and their dependency groups are citation/grounding-validated before display; progress can stream immediately.
+- Expired/stale processing workers cannot mutate committed stage results or publish an active version, even after broker lock redelivery.
+- Authorization-aware search handles both broad collection access and narrow document overrides without leaking evidence or silently truncating filters.
+- Table queries understand hierarchical headers, scale and units, and are executed inside bounded read-only database resource envelopes.
 - Search is pinned to a validated active document/index generation and retains in-flight source integrity through cutover.
 
 **Implementation order:** establish immutable storage, the CDM, provenance/locator fidelity, and extraction quality **before** optimizing the conversational UI. This is the foundation that makes future multimodal models and formats safely replaceable.
