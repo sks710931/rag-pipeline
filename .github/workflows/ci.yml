@@ -122,6 +122,47 @@ jobs:
       - name: Build container image
         run: docker build -f apps/api/Dockerfile -t ragpipeline-api:ci .
 
+      - name: Smoke test container
+        run: |
+          set -euo pipefail
+
+          docker run -d --name ragpipeline-smoke -p 8080:8080 -e ASPNETCORE_ENVIRONMENT=Production -e 'ConnectionStrings__Database=Host=localhost;Database=smoke;Username=smoke' ragpipeline-api:ci
+
+          ready=0
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/api/v1/system/health/live > /dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+
+          if [ "$ready" -ne 1 ]; then
+            echo "Health check failed after 30 seconds"
+            docker logs ragpipeline-smoke
+            exit 1
+          fi
+
+          if ! body=$(curl -fsS http://localhost:8080/ 2>&1); then
+            echo "Failed to fetch root endpoint"
+            echo "$body"
+            docker logs ragpipeline-smoke
+            exit 1
+          fi
+
+          if ! echo "$body" | grep -q '<div id="root"'; then
+            echo "Response body does not contain '<div id=\"root\"'"
+            echo "$body"
+            docker logs ragpipeline-smoke
+            exit 1
+          fi
+
+      - name: Stop and remove container
+        if: always()
+        run: |
+          docker stop ragpipeline-smoke || true
+          docker rm ragpipeline-smoke || true
+
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 15
