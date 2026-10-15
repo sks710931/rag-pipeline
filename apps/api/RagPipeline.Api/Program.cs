@@ -15,6 +15,14 @@ public partial class Program
         {
             var builder = WebApplication.CreateBuilder(args);
 
+            var secretsDir = Environment.GetEnvironmentVariable("RAGPIPELINE_SECRETS_DIR");
+            if (string.IsNullOrWhiteSpace(secretsDir))
+            {
+                secretsDir = "/run/secrets";
+            }
+
+            builder.Configuration.AddKeyPerFile(directoryPath: secretsDir, optional: true, reloadOnChange: false);
+
             // Startup configuration validation
             builder.Services.AddStartupConfigurationValidation(builder.Configuration);
 

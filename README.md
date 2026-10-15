@@ -2,6 +2,35 @@
 
 Modular monolith backend and React frontend for the Enterprise Multimodal RAG Platform.
 
+## Self-hosted quickstart
+
+Run the minimal production-like stack (PostgreSQL 17 Alpine and API host) using Docker Compose:
+
+1. **Generate secrets**:
+   ```bash
+   mkdir -p distribution/compose/secrets
+   DB_PASS=$(openssl rand -hex 32)
+   printf "%s" "$DB_PASS" > distribution/compose/secrets/db_password.txt
+   printf "Host=postgres;Port=5432;Database=ragpipeline;Username=ragpipeline;Password=%s" "$DB_PASS" > distribution/compose/secrets/ConnectionStrings__Database.txt
+   chmod 700 distribution/compose/secrets
+   chmod 644 distribution/compose/secrets/db_password.txt distribution/compose/secrets/ConnectionStrings__Database.txt
+   ```
+   With plain Docker Compose, file secrets are bind-mounted keeping host owner/mode, and the api container runs as non-root uid 1654 (user app), so chmod 600 files owned by the host user would be unreadable and the api would fail to start. Set directory distribution/compose/secrets chmod 700 (keeps other host users out) and the two secret files chmod 644 (readable by the container user; protection comes from the 700 directory).
+
+   *Troubleshooting*: if api logs a missing/empty ConnectionStrings:Database after secrets exist, check file readability.
+
+2. **Launch stack**:
+   ```bash
+   docker compose -f distribution/compose/compose.yaml up -d --build
+   ```
+
+3. **Verify health**:
+   ```bash
+   docker compose -f distribution/compose/compose.yaml ps
+   ```
+
+For lifecycle management, configuration precedence, security hardening, and production reverse proxy setup, see the [Local Deployment Runbook](docs/runbooks/local-deployment.md).
+
 ## Development
 
 ### Prerequisites
