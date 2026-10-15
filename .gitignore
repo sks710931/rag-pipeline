@@ -50,3 +50,8 @@ node_modules/
 apps/web/dist/
 .pnpm-debug.log*
 
+## Docker Compose
+distribution/compose/.env
+distribution/compose/secrets/*
+!distribution/compose/secrets/*.example
+!distribution/compose/secrets/README.md

@@ -47,6 +47,8 @@ EXPOSE 8080
 COPY --from=build /app/publish ./
 COPY --from=web-build /web/dist ./wwwroot
 
+RUN mkdir -p /var/lib/ragpipeline/keys && chown -R app:app /var/lib/ragpipeline/keys
+
 # Non-root app user
 # Health check: use /api/v1/system/health/live if any (no HEALTHCHECK against /ready)
 USER app

@@ -1,0 +1,2 @@
+# False positive: directory path assigned to SECRETS_DIR in the compose-smoke CI job, not a secret
+da9806296be8261469ae9f3ce1fe701e940672db:.github/workflows/ci.yml:generic-api-key:470

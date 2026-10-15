@@ -2,6 +2,35 @@
 
 Modular monolith backend and React frontend for the Enterprise Multimodal RAG Platform.
 
+## Self-hosted quickstart
+
+Run the minimal production-like stack (PostgreSQL 17 Alpine and API host) using Docker Compose:
+
+1. **Generate secrets**:
+   ```bash
+   mkdir -p distribution/compose/secrets
+   DB_PASS=$(openssl rand -hex 32)
+   printf "%s" "$DB_PASS" > distribution/compose/secrets/db_password.txt
+   printf "Host=postgres;Port=5432;Database=ragpipeline;Username=ragpipeline;Password=%s" "$DB_PASS" > distribution/compose/secrets/ConnectionStrings__Database.txt
+   chmod 700 distribution/compose/secrets
+   chmod 644 distribution/compose/secrets/db_password.txt distribution/compose/secrets/ConnectionStrings__Database.txt
+   ```
+   With plain Docker Compose, file secrets are bind-mounted keeping host owner/mode, and the api container runs as non-root uid 1654 (user app), so chmod 600 files owned by the host user would be unreadable and the api would fail to start. Set directory distribution/compose/secrets chmod 700 (keeps other host users out) and the two secret files chmod 644 (readable by the container user; protection comes from the 700 directory).
+
+   *Troubleshooting*: if api logs a missing/empty ConnectionStrings:Database after secrets exist, check file readability.
+
+2. **Launch stack**:
+   ```bash
+   docker compose -f distribution/compose/compose.yaml up -d --build
+   ```
+
+3. **Verify health**:
+   ```bash
+   docker compose -f distribution/compose/compose.yaml ps
+   ```
+
+For lifecycle management, configuration precedence, security hardening, and production reverse proxy setup, see the [Local Deployment Runbook](docs/runbooks/local-deployment.md).
+
 ## Development
 
 ### Prerequisites
@@ -212,3 +241,55 @@ UPDATE_OPENAPI_SPEC=1 dotnet test tests/Integration/RagPipeline.IntegrationTests
 - **Reference Invariant**: Feature modules may reference only `RagPipeline.BuildingBlocks` and runtime libraries; modules must never directly reference each other.
 - **Single Persistence Boundary**: Persistence is managed centrally; independent, per-feature `DbContext`s are not permitted.
 - **Frontend SPA Boundary**: The React SPA in `apps/web` interacts with the backend strictly via the BFF HTTP API (`/api/*`).
+
+---
+
+## Continuous Integration
+
+The repository enforces automated validation on pull requests and pushes to `main` via GitHub Actions (`.github/workflows/ci.yml`).
+
+### CI Jobs & Local Equivalents
+
+| CI Job | Local Equivalent Command |
+|---|---|
+| `build-test` | `dotnet restore --locked-mode && dotnet build --no-restore -c Release -warnaserror && dotnet test --no-build -c Release --logger trx --results-directory TestResults` |
+| `format` | `dotnet format --verify-no-changes --no-restore` |
+| `secret-scan` | `gitleaks git --redact --no-banner .` |
+| `dependency-advisories` | `dotnet list package --vulnerable --include-transitive` |
+| `container-build` | `docker build -f apps/api/Dockerfile -t ragpipeline-api:sha-$(git rev-parse --short=12 HEAD) --label org.opencontainers.image.revision=$(git rev-parse HEAD) .` |
+| `web` | `cd apps/web && pnpm install --frozen-lockfile && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm audit --audit-level=high --prod` |
+
+### Container Tag Convention
+
+In the `container-build` job, the API container image is built without pushing to a registry or performing registry login. The image is tagged following the commit SHA convention:
+- **Image tag:** `ragpipeline-api:sha-<first 12 chars of github.sha>` (e.g. `ragpipeline-api:sha-${GITHUB_SHA:0:12}` or locally `ragpipeline-api:sha-$(git rev-parse --short=12 HEAD)`)
+- **OCI label:** `org.opencontainers.image.revision=${{ github.sha }}` (the full commit SHA)
+
+Local equivalent command:
+```bash
+docker build -f apps/api/Dockerfile \
+  -t "ragpipeline-api:sha-$(git rev-parse --short=12 HEAD)" \
+  --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" .
+```
+
+### Downloading CI Artifacts
+
+CI produces two artifacts:
+- **`test-results`**: Test execution reports uploaded on every run (`if: always()`) from the `TestResults` directory.
+- **`web-logs`**: Frontend output (`apps/web/dist`) uploaded only when the `web` job fails (`if: failure()`, `if-no-files-found: ignore`).
+
+To download these artifacts:
+- **GitHub UI**: Navigate to the repository's **Actions** tab, click on the workflow run, scroll down to the **Artifacts** section at the bottom of the Summary page, and click `test-results` or `web-logs` to download the zip file.
+- **GitHub CLI (`gh`)**:
+  ```bash
+  # Download .NET test results
+  gh run download <run-id> -n test-results --dir ./TestResults
+
+  # Download web build/logs artifact (if the web job failed)
+  gh run download <run-id> -n web-logs --dir ./web-logs
+  ```
+
+### Release & Compliance Gaps
+
+SBOM generation, image signing and release certification are NOT implemented yet.
+
