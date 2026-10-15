@@ -26,6 +26,12 @@ public static class ConfigurationValidationExtensions
             })
             .ValidateOnStart();
 
+        // ReverseProxy Options
+        services.AddSingleton<IValidateOptions<ReverseProxyOptions>, ReverseProxyOptionsValidator>();
+        services.AddOptions<ReverseProxyOptions>()
+            .Bind(configuration.GetSection(ReverseProxyOptions.SectionName))
+            .ValidateOnStart();
+
         return services;
     }
 }

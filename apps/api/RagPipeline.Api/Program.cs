@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using RagPipeline.Api;
 using RagPipeline.BuildingBlocks.Configuration;
 using RagPipeline.BuildingBlocks.ErrorHandling;
+using RagPipeline.BuildingBlocks.Hosting;
 using RagPipeline.BuildingBlocks.Modules;
 using RagPipeline.DeploymentCapabilities;
 using RagPipeline.IdentityAccess;
@@ -14,6 +15,7 @@ public partial class Program
         try
         {
             var builder = WebApplication.CreateBuilder(args);
+            builder.Services.AddHostingBaseline();
 
             var secretsDir = Environment.GetEnvironmentVariable("RAGPIPELINE_SECRETS_DIR");
             if (string.IsNullOrWhiteSpace(secretsDir))
@@ -34,12 +36,18 @@ public partial class Program
             builder.Services.AddModule<TenantManagementModule>(builder.Configuration);
             builder.Services.AddModule<DeploymentCapabilitiesModule>(builder.Configuration);
 
+            // OpenAPI document generation (build-time / test-time only; not served at runtime)
+            builder.Services.AddRagPipelineOpenApi();
+
             var app = builder.Build();
 
             // Explicitly trigger ValidateOnStart options validation before host startup
             // to ensure sanitized diagnostics are written without runtime host stack traces
             _ = app.Services.GetRequiredService<IOptions<HostingOptions>>().Value;
             _ = app.Services.GetRequiredService<IOptions<DatabaseOptions>>().Value;
+            _ = app.Services.GetRequiredService<IOptions<ReverseProxyOptions>>().Value;
+
+            app.UseHostingBaseline();
 
             // Problem Details error handling pipeline
             app.UseProblemDetailsContract();
