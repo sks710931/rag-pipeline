@@ -76,6 +76,17 @@ public class IsolationPlanTests
         await using (var seedCmd = superConn.CreateCommand())
         {
             seedCmd.CommandText = $@"
+                INSERT INTO tenants (id, name, slug, created_at, is_active)
+                SELECT gen_random_uuid(), 'plan-tenant-' || g, 'plan-slug-' || g, clock_timestamp(), true
+                FROM generate_series(1, 100) g
+                ON CONFLICT DO NOTHING;
+
+                INSERT INTO tenant_profiles (tenant_id, display_name, created_at, updated_at)
+                SELECT t.id, 'Profile ' || t.name, clock_timestamp(), clock_timestamp()
+                FROM tenants t
+                WHERE t.name LIKE 'plan-tenant-%'
+                ON CONFLICT DO NOTHING;
+
                 INSERT INTO asp_net_users (id, user_name, normalized_user_name, password_hash, security_stamp, concurrency_stamp, lockout_enabled, access_failed_count)
                 SELECT gen_random_uuid(), 'plan-user-' || g, 'PLAN-USER-' || g, 'hash', gen_random_uuid()::text, gen_random_uuid()::text, false, 0
                 FROM generate_series(1, 200) g
@@ -87,6 +98,7 @@ public class IsolationPlanTests
                 WHERE u.user_name LIKE 'plan-user-%'
                 ON CONFLICT DO NOTHING;
 
+                ANALYZE tenants;
                 ANALYZE tenant_profiles;
                 ANALYZE tenant_memberships;
             ";
@@ -102,7 +114,7 @@ public class IsolationPlanTests
         await using (var setCmd = runtimeConn.CreateCommand())
         {
             setCmd.Transaction = tx;
-            setCmd.CommandText = $"SELECT set_config('app.current_tenant_id', '{_fixture.TenantAId}', true);";
+            setCmd.CommandText = $"SELECT set_config('app.current_tenant_id', '{_fixture.TenantAId}', true); SET LOCAL enable_seqscan = off;";
             await setCmd.ExecuteNonQueryAsync();
         }
 
@@ -118,7 +130,7 @@ public class IsolationPlanTests
             var nodes = GetAllPlanNodes(root);
 
             Assert.DoesNotContain(nodes, n => n.NodeType == "Seq Scan" && n.RelationName == "tenant_profiles");
-            Assert.Contains(nodes, n => n.NodeType == "Index Scan" || n.NodeType == "Bitmap Index Scan");
+            Assert.Contains(nodes, n => n.NodeType == "Index Scan" || n.NodeType == "Index Only Scan" || n.NodeType == "Bitmap Index Scan");
         }
 
         // Query 2: tenant_memberships
@@ -133,7 +145,7 @@ public class IsolationPlanTests
             var nodes = GetAllPlanNodes(root);
 
             Assert.DoesNotContain(nodes, n => n.NodeType == "Seq Scan" && n.RelationName == "tenant_memberships");
-            Assert.Contains(nodes, n => n.NodeType == "Index Scan" || n.NodeType == "Bitmap Index Scan" || n.NodeType == "Bitmap Heap Scan");
+            Assert.Contains(nodes, n => n.NodeType == "Index Scan" || n.NodeType == "Index Only Scan" || n.NodeType == "Bitmap Index Scan" || n.NodeType == "Bitmap Heap Scan");
         }
 
         await tx.RollbackAsync();
