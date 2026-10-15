@@ -32,9 +32,10 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
                 FOR EACH ROW
                 EXECUTE FUNCTION reject_audit_mutation();
 
-            -- 2. Revoke direct UPDATE, DELETE, TRUNCATE on audit_events from runtime and migrator roles
+            -- 2. Revoke direct UPDATE, DELETE, TRUNCATE on audit_events from runtime role, and UPDATE, TRUNCATE from migrator
             REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM rag_app;
-            REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM migrator;
+            REVOKE UPDATE, TRUNCATE ON audit_events FROM migrator;
+            GRANT DELETE ON audit_events TO migrator;
 
             -- 3. Row Level Security on audit_events
             ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
