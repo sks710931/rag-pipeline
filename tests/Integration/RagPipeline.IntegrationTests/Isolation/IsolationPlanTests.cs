@@ -115,12 +115,10 @@ public class IsolationPlanTests
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement[0].GetProperty("Plan");
-            var nodeType = root.GetProperty("Node Type").GetString();
+            var nodes = GetAllPlanNodes(root);
 
-            Assert.True(
-                nodeType == "Index Scan" || nodeType == "Bitmap Index Scan",
-                $"Query on tenant_profiles must use Index Scan under RLS. Actual: {nodeType}");
-            Assert.NotEqual("Seq Scan", nodeType);
+            Assert.DoesNotContain(nodes, n => n.NodeType == "Seq Scan" && n.RelationName == "tenant_profiles");
+            Assert.Contains(nodes, n => n.NodeType == "Index Scan" || n.NodeType == "Bitmap Index Scan");
         }
 
         // Query 2: tenant_memberships
@@ -132,14 +130,38 @@ public class IsolationPlanTests
 
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement[0].GetProperty("Plan");
-            var nodeType = root.GetProperty("Node Type").GetString();
+            var nodes = GetAllPlanNodes(root);
 
-            Assert.True(
-                nodeType == "Index Scan" || nodeType == "Bitmap Index Scan" || nodeType == "Bitmap Heap Scan",
-                $"Query on tenant_memberships must use index-backed scan under RLS. Actual: {nodeType}");
-            Assert.NotEqual("Seq Scan", nodeType);
+            Assert.DoesNotContain(nodes, n => n.NodeType == "Seq Scan" && n.RelationName == "tenant_memberships");
+            Assert.Contains(nodes, n => n.NodeType == "Index Scan" || n.NodeType == "Bitmap Index Scan" || n.NodeType == "Bitmap Heap Scan");
         }
 
         await tx.RollbackAsync();
+    }
+
+    private static List<(string NodeType, string? RelationName)> GetAllPlanNodes(JsonElement planElement)
+    {
+        var list = new List<(string NodeType, string? RelationName)>();
+        if (planElement.TryGetProperty("Node Type", out var nodeTypeProp))
+        {
+            var nodeType = nodeTypeProp.GetString() ?? string.Empty;
+            string? relName = null;
+            if (planElement.TryGetProperty("Relation Name", out var relNameProp))
+            {
+                relName = relNameProp.GetString();
+            }
+
+            list.Add((nodeType, relName));
+        }
+
+        if (planElement.TryGetProperty("Plans", out var plansProp) && plansProp.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var child in plansProp.EnumerateArray())
+            {
+                list.AddRange(GetAllPlanNodes(child));
+            }
+        }
+
+        return list;
     }
 }
