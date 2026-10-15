@@ -1,9 +1,11 @@
 using Microsoft.Extensions.Options;
 using RagPipeline.Api;
+using RagPipeline.BuildingBlocks.Authorization;
 using RagPipeline.BuildingBlocks.Configuration;
 using RagPipeline.BuildingBlocks.ErrorHandling;
 using RagPipeline.BuildingBlocks.Hosting;
 using RagPipeline.BuildingBlocks.Modules;
+using RagPipeline.BuildingBlocks.Tenancy;
 using RagPipeline.DeploymentCapabilities;
 using RagPipeline.IdentityAccess;
 using RagPipeline.Persistence;
@@ -32,6 +34,9 @@ public partial class Program
             // RFC 9457 Problem Details contract
             builder.Services.AddProblemDetailsContract();
 
+            // Authorization & Authentication
+            builder.Services.AddRagPipelineAuthorization();
+
             // Module registration
             builder.Services.AddModule<IdentityAccessModule>(builder.Configuration);
             builder.Services.AddModule<TenantManagementModule>(builder.Configuration);
@@ -55,6 +60,11 @@ public partial class Program
 
             // Problem Details error handling pipeline
             app.UseProblemDetailsContract();
+
+            // Authentication and tenant isolation pipeline
+            app.UseAuthentication();
+            app.UseMiddleware<TenantContextMiddleware>();
+            app.UseAuthorization();
 
             // Map module endpoints
             app.MapModuleEndpoints();
