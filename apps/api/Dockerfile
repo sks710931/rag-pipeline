@@ -1,3 +1,16 @@
+# Web build stage
+# Multi-arch index digest; needs periodic refresh
+FROM node:22-bookworm-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392 AS web-build
+WORKDIR /web
+
+RUN corepack enable && corepack prepare pnpm@12.11.2 --activate
+
+COPY apps/web/package.json apps/web/pnpm-lock.yaml apps/web/pnpm-workspace.yaml apps/web/.npmrc ./
+RUN pnpm install --frozen-lockfile
+
+COPY apps/web/ ./
+RUN pnpm build
+
 # Build stage
 # Multi-arch index digest; needs periodic refresh
 FROM mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
@@ -32,6 +45,7 @@ ENV ASPNETCORE_URLS=http://+:8080
 EXPOSE 8080
 
 COPY --from=build /app/publish ./
+COPY --from=web-build /web/dist ./wwwroot
 
 RUN mkdir -p /var/lib/ragpipeline/keys && chown -R app:app /var/lib/ragpipeline/keys
 
