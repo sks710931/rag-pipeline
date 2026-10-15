@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SECRETS_DIR is a directory path in the compose-smoke CI job, not a secret"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ["^\\.github/workflows/ci\\.yml$"]
+regexTarget = "line"
+regexes = ["^\\s*SECRETS_DIR=\"distribution/compose/secrets\"\\s*$"]
