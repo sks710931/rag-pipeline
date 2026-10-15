@@ -18,7 +18,9 @@ public sealed class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logge
         httpContext.Response.StatusCode = StatusCodes.Status500InternalServerError;
         httpContext.Response.ContentType = ProblemDetailsExtensions.ProblemJsonMediaType;
 
-        var traceId = Activity.Current?.Id ?? httpContext.TraceIdentifier;
+        var traceId = Activity.Current is { TraceId: var tid } && tid != default
+            ? tid.ToString()
+            : httpContext.TraceIdentifier;
 
         var problem = new ProblemDetails
         {

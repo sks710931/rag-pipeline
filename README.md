@@ -205,6 +205,20 @@ Configuration validation failed for 'DatabaseOptions':
 
 ---
 
+### OpenAPI Contract
+
+The OpenAPI 3.1 contract specification for `RagPipeline.Api` is committed at `contracts/openapi/rag-pipeline.v1.json`.
+
+- **No Runtime Serving**: OpenAPI document generation is configured for build-time and test-time tooling only via `AddRagPipelineOpenApi()`; specifications and interactive documentation are not served over HTTP at runtime.
+- **CI Drift Detection**: Automated integration tests in `tests/Integration/RagPipeline.IntegrationTests/OpenApiContractTests.cs` ensure the live API specification matches the committed contract file, failing CI if any drift occurs.
+
+To regenerate and update the committed contract specification:
+```bash
+UPDATE_OPENAPI_SPEC=1 dotnet test tests/Integration/RagPipeline.IntegrationTests --filter "FullyQualifiedName~OpenApiContractTests.OpenApiSpec_MatchesCommittedContract"
+```
+
+---
+
 ### Package Ownership & Dependency Management
 
 - **Central Package Management (CPM)**: Enabled globally via `Directory.Packages.props` (`ManagePackageVersionsCentrally=true`). Package versions are pinned centrally and shared across all .NET projects.
