@@ -76,13 +76,13 @@ public class IsolationPlanTests
         await using (var seedCmd = superConn.CreateCommand())
         {
             seedCmd.CommandText = $@"
-                INSERT INTO tenants (id, name, slug, created_at, is_active)
-                SELECT gen_random_uuid(), 'plan-tenant-' || g, 'plan-slug-' || g, clock_timestamp(), true
+                INSERT INTO tenants (id, name, slug, status, created_at)
+                SELECT gen_random_uuid(), 'plan-tenant-' || g, 'plan-slug-' || g, 'Active', clock_timestamp()
                 FROM generate_series(1, 100) g
                 ON CONFLICT DO NOTHING;
 
-                INSERT INTO tenant_profiles (tenant_id, display_name, created_at, updated_at)
-                SELECT t.id, 'Profile ' || t.name, clock_timestamp(), clock_timestamp()
+                INSERT INTO tenant_profiles (tenant_id, display_name, settings_json, created_at, updated_at, concurrency_token)
+                SELECT t.id, 'Profile ' || t.name, '{}'::jsonb, clock_timestamp(), clock_timestamp(), gen_random_uuid()
                 FROM tenants t
                 WHERE t.name LIKE 'plan-tenant-%'
                 ON CONFLICT DO NOTHING;
