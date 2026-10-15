@@ -82,6 +82,7 @@ public static class SyntheticUsers
                 services.AddScoped<IDeploymentOwnerLookup>(_ => store);
                 services.AddScoped<ITenantMembershipLookup>(_ => store);
                 services.AddScoped<ITenantProfileStore>(_ => store);
+                services.AddScoped<RagPipeline.BuildingBlocks.Audit.IAuditEventStore>(_ => store);
 
                 services.AddAuthentication(options =>
                 {
@@ -178,11 +179,12 @@ public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationScheme
     }
 }
 
-public sealed class InMemoryAuthzTestStore : IDeploymentOwnerLookup, ITenantMembershipLookup, ITenantProfileStore
+public sealed class InMemoryAuthzTestStore : IDeploymentOwnerLookup, ITenantMembershipLookup, ITenantProfileStore, RagPipeline.BuildingBlocks.Audit.IAuditEventStore
 {
     private readonly ConcurrentDictionary<Guid, bool> _deploymentSuperadmins = new();
     private readonly ConcurrentDictionary<(Guid TenantId, Guid UserId), (string Role, bool IsFirstOwner)> _memberships = new();
     private readonly ConcurrentDictionary<Guid, TenantProfileDto> _profiles = new();
+    private readonly ConcurrentBag<RagPipeline.BuildingBlocks.Audit.AuditEvent> _auditEvents = new();
 
     public void AddDeploymentOwner(Guid userId)
     {
@@ -235,5 +237,22 @@ public sealed class InMemoryAuthzTestStore : IDeploymentOwnerLookup, ITenantMemb
         var updated = new TenantProfileDto(tenantId, displayName, settingsJson, DateTimeOffset.UtcNow, DateTimeOffset.UtcNow);
         _profiles[tenantId] = updated;
         return Task.FromResult(updated);
+    }
+
+    public Task AppendAsync(RagPipeline.BuildingBlocks.Audit.AuditEvent auditEvent, CancellationToken cancellationToken = default)
+    {
+        _auditEvents.Add(auditEvent);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<RagPipeline.BuildingBlocks.Audit.AuditEvent>> GetTenantEventsAsync(Guid tenantId, int skip, int take, CancellationToken cancellationToken = default)
+    {
+        var events = _auditEvents.Where(e => e.TenantId == tenantId).OrderByDescending(e => e.OccurredAt).Skip(skip).Take(take).ToList();
+        return Task.FromResult<IReadOnlyList<RagPipeline.BuildingBlocks.Audit.AuditEvent>>(events);
+    }
+
+    public Task<int> GetTenantEventsCountAsync(Guid tenantId, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(_auditEvents.Count(e => e.TenantId == tenantId));
     }
 }

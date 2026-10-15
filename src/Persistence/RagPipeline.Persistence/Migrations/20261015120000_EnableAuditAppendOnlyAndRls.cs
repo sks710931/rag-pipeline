@@ -1,0 +1,80 @@
+namespace RagPipeline.Persistence.Migrations;
+
+using Microsoft.EntityFrameworkCore.Migrations;
+
+#nullable disable
+
+public partial class EnableAuditAppendOnlyAndRls : Migration
+{
+    protected override void Up(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql(@"
+            -- 1. Append-only trigger for audit_events (rejects direct UPDATE and DELETE unless retention purge flag is set)
+            CREATE OR REPLACE FUNCTION reject_audit_mutation()
+            RETURNS trigger AS $$
+            BEGIN
+                IF current_setting('app.allow_audit_retention_purge', true) = 'true' THEN
+                    IF TG_OP = 'DELETE' THEN
+                        RETURN OLD;
+                    END IF;
+                END IF;
+                RAISE EXCEPTION 'audit_events is append-only: updates and deletes are prohibited.';
+            END;
+            $$ LANGUAGE plpgsql;
+
+            DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events;
+            CREATE TRIGGER trg_audit_events_immutable
+                BEFORE UPDATE OR DELETE ON audit_events
+                FOR EACH ROW
+                EXECUTE FUNCTION reject_audit_mutation();
+
+            -- 2. Revoke direct UPDATE, DELETE, TRUNCATE on audit_events from runtime and migrator roles
+            REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM rag_app;
+            REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM migrator;
+
+            -- 3. Row Level Security on audit_events
+            ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
+            ALTER TABLE audit_events FORCE ROW LEVEL SECURITY;
+
+            DROP POLICY IF EXISTS audit_events_tenant_isolation_policy ON audit_events;
+            CREATE POLICY audit_events_tenant_isolation_policy ON audit_events
+                USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+                WITH CHECK (
+                    (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+                    OR (tenant_id IS NULL AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NULL)
+                );
+
+            -- 4. Authorized retention purge function (SECURITY DEFINER allows controlled deletion past cutoff)
+            CREATE OR REPLACE FUNCTION purge_expired_audit_events(p_cutoff timestamptz)
+            RETURNS integer AS $$
+            DECLARE
+                v_deleted integer;
+            BEGIN
+                PERFORM set_config('app.allow_audit_retention_purge', 'true', true);
+                DELETE FROM audit_events WHERE occurred_at < p_cutoff;
+                GET DIAGNOSTICS v_deleted = ROW_COUNT;
+                RETURN v_deleted;
+            END;
+            $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+            GRANT EXECUTE ON FUNCTION purge_expired_audit_events(timestamptz) TO rag_app, migrator;
+        ");
+    }
+
+    protected override void Down(MigrationBuilder migrationBuilder)
+    {
+        migrationBuilder.Sql(@"
+            DROP FUNCTION IF EXISTS purge_expired_audit_events(timestamptz);
+
+            DROP POLICY IF EXISTS audit_events_tenant_isolation_policy ON audit_events;
+            ALTER TABLE audit_events NO FORCE ROW LEVEL SECURITY;
+            ALTER TABLE audit_events DISABLE ROW LEVEL SECURITY;
+
+            DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events;
+            DROP FUNCTION IF EXISTS reject_audit_mutation();
+
+            GRANT UPDATE, DELETE ON audit_events TO rag_app;
+            GRANT UPDATE, DELETE, TRUNCATE ON audit_events TO migrator;
+        ");
+    }
+}

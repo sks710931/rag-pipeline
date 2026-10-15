@@ -29,6 +29,7 @@ public static class TenantPermissions
     public const string ProfileRead = "tenant:profile:read";
     public const string ProfileWrite = "tenant:profile:write";
     public const string MembersManage = "tenant:members:manage";
+    public const string AuditRead = "tenant:audit:read";
 
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -36,7 +37,8 @@ public static class TenantPermissions
         SettingsWrite,
         ProfileRead,
         ProfileWrite,
-        MembersManage
+        MembersManage,
+        AuditRead
     }.ToImmutableHashSet(StringComparer.OrdinalIgnoreCase);
 }
 
@@ -103,6 +105,7 @@ public static class Policies
     public const string TenantSettingsRead = "TenantSettingsRead";
     public const string TenantSettingsWrite = "TenantSettingsWrite";
     public const string TenantOwner = "TenantOwner";
+    public const string TenantAuditRead = "TenantAuditRead";
 
     public static readonly IReadOnlySet<string> All = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -110,6 +113,7 @@ public static class Policies
         KeyRootAndBootstrapAdmin,
         TenantSettingsRead,
         TenantSettingsWrite,
-        TenantOwner
+        TenantOwner,
+        TenantAuditRead
     }.ToImmutableHashSet(StringComparer.OrdinalIgnoreCase);
 }

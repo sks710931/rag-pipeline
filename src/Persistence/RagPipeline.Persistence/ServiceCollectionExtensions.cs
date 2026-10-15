@@ -42,6 +42,9 @@ public static class ServiceCollectionExtensions
             services.AddScoped<ITenantMembershipLookup, EfTenantMembershipLookup>();
             services.AddScoped<ITenantProfileStore, EfTenantProfileStore>();
             services.AddScoped<ITenantTransactionCoordinator, EfTenantTransactionCoordinator>();
+            services.AddScoped<RagPipeline.BuildingBlocks.Audit.IAuditEventStore, RagPipeline.Persistence.Audit.EfAuditEventStore>();
+            services.AddScoped<RagPipeline.BuildingBlocks.Audit.IAuditRetentionService, RagPipeline.Persistence.Audit.EfAuditEventStore>();
+            services.AddScoped<RagPipeline.BuildingBlocks.Session.ISessionRecordStore, RagPipeline.Persistence.Session.EfSessionRecordStore>();
         }
 
         return services;

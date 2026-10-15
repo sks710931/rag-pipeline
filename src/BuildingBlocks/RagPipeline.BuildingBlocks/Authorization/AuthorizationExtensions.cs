@@ -37,6 +37,10 @@ public static class AuthorizationExtensions
             options.AddPolicy(Policies.TenantOwner, policy =>
                 policy.RequireAuthenticatedUser()
                       .AddRequirements(new TenantRoleRequirement(Roles.TenantOwner)));
+
+            options.AddPolicy(Policies.TenantAuditRead, policy =>
+                policy.RequireAuthenticatedUser()
+                      .AddRequirements(new TenantPermissionRequirement(TenantPermissions.AuditRead)));
         });
 
         services.AddScoped<IAuthorizationHandler, DeploymentAdminHandler>();
