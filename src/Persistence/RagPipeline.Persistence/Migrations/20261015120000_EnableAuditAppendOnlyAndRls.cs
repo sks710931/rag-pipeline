@@ -42,10 +42,7 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
 
             DROP POLICY IF EXISTS audit_events_tenant_isolation_policy ON audit_events;
             CREATE POLICY audit_events_tenant_isolation_policy ON audit_events
-                USING (
-                    (current_setting('app.allow_audit_retention_purge', true) = 'true')
-                    OR (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
-                )
+                USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
                 WITH CHECK (
                     (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
                     OR (tenant_id IS NULL AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NULL)

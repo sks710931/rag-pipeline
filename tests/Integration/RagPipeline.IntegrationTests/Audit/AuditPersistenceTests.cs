@@ -190,6 +190,81 @@ public class AuditPersistenceTests
     }
 
     [Fact]
+    public async Task Audit_Readback_RuntimeRoleWithRetentionGucSet_CannotBypassTenantIsolation()
+    {
+        if (!_fixture.DockerAvailable) return;
+
+        var tenantA = Guid.NewGuid();
+        var tenantB = Guid.NewGuid();
+        var idA = Guid.NewGuid();
+        var idB = Guid.NewGuid();
+
+        await using (var superContext = _fixture.CreateSuperuserDbContext())
+        {
+            superContext.AuditEvents.Add(new EntityAuditEvent
+            {
+                Id = idA,
+                TenantId = tenantA,
+                ActorType = "User",
+                Action = "Tenant.ActionA",
+                TargetResource = "Tenant",
+                Outcome = "Success",
+                CorrelationId = "corr-iso-a"
+            });
+            superContext.AuditEvents.Add(new EntityAuditEvent
+            {
+                Id = idB,
+                TenantId = tenantB,
+                ActorType = "User",
+                Action = "Tenant.ActionB",
+                TargetResource = "Tenant",
+                Outcome = "Success",
+                CorrelationId = "corr-iso-b"
+            });
+            await superContext.SaveChangesAsync();
+        }
+
+        // Connect as runtime role (rag_app)
+        await using var conn = new NpgsqlConnection(_fixture.RuntimeConnectionString);
+        await conn.OpenAsync();
+
+        // 1. Set the retention purge flag in the session
+        await using (var gucCmd = conn.CreateCommand())
+        {
+            gucCmd.CommandText = "SELECT set_config('app.allow_audit_retention_purge', 'true', false);";
+            await gucCmd.ExecuteNonQueryAsync();
+        }
+
+        // 2. Query Tenant B's rows while in Tenant A's context: must return 0
+        await using (var setTenantCmd = conn.CreateCommand())
+        {
+            setTenantCmd.CommandText = $"SELECT set_config('app.current_tenant_id', '{tenantA}', false);";
+            await setTenantCmd.ExecuteNonQueryAsync();
+        }
+
+        await using (var queryCmd = conn.CreateCommand())
+        {
+            queryCmd.CommandText = $"SELECT count(*) FROM audit_events WHERE tenant_id = '{tenantB}';";
+            var count = Convert.ToInt32(await queryCmd.ExecuteScalarAsync());
+            Assert.Equal(0, count);
+        }
+
+        // 3. Query all rows while tenant context is unset: must return 0
+        await using (var unsetTenantCmd = conn.CreateCommand())
+        {
+            unsetTenantCmd.CommandText = "SELECT set_config('app.current_tenant_id', '', false);";
+            await unsetTenantCmd.ExecuteNonQueryAsync();
+        }
+
+        await using (var queryAllCmd = conn.CreateCommand())
+        {
+            queryAllCmd.CommandText = "SELECT count(*) FROM audit_events;";
+            var countAll = Convert.ToInt32(await queryAllCmd.ExecuteScalarAsync());
+            Assert.Equal(0, countAll);
+        }
+    }
+
+    [Fact]
     public async Task Audit_Write_WithoutTenantContext_AllowedOnlyForDeploymentScope()
     {
         if (!_fixture.DockerAvailable) return;
