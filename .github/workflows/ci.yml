@@ -220,4 +220,297 @@ jobs:
           path: apps/web/dist
           if-no-files-found: ignore
 
+  compose-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      COMPOSE_FILE: distribution/compose/compose.yaml
+      COMPOSE_PROJECT_NAME: smoke
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      - name: Generate throwaway secrets
+        run: |
+          set -euo pipefail
+          set +x
+          mkdir -p distribution/compose/secrets
+          DB_PASS=$(openssl rand -hex 32)
+          echo "::add-mask::$DB_PASS"
+          printf "%s" "$DB_PASS" > distribution/compose/secrets/db_password.txt
+          printf "Host=postgres;Port=5432;Database=ragpipeline;Username=ragpipeline;Password=%s" "$DB_PASS" > distribution/compose/secrets/ConnectionStrings__Database.txt
+          chmod 700 distribution/compose/secrets
+          chmod 644 distribution/compose/secrets/db_password.txt
+          chmod 644 distribution/compose/secrets/ConnectionStrings__Database.txt
+          if [ -f distribution/compose/secrets/db_password.txt ] && [ -f distribution/compose/secrets/ConnectionStrings__Database.txt ]; then
+            echo "CHECK generate-secrets: PASS"
+          else
+            echo "CHECK generate-secrets: FAIL (secrets files not created)"
+            exit 1
+          fi
+
+      - name: Validate compose configuration
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" config -q
+          echo "CHECK compose-config: PASS"
+
+      - name: Start compose stack
+        run: |
+          set -euo pipefail
+          docker compose -f "$COMPOSE_FILE" up -d --build --wait --wait-timeout 180
+          echo "CHECK compose-up: PASS"
+
+      - name: Run compose smoke checks
+        run: |
+          set -euo pipefail
+
+          FAILED=0
+          API_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -q api)
+          POSTGRES_CONTAINER=$(docker compose -f "$COMPOSE_FILE" ps -q postgres)
+
+          if [ -z "$API_CONTAINER" ] || [ -z "$POSTGRES_CONTAINER" ]; then
+            echo "CHECK containers-running: FAIL (could not resolve container IDs)"
+            exit 1
+          fi
+
+          # (a) Liveness healthcheck endpoint
+          HEALTH_STATUS=$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/v1/system/health/live 2>/dev/null || true)
+          if [ "$HEALTH_STATUS" = "200" ]; then
+            echo "CHECK health-live: PASS"
+            CHECK_HEALTH="PASS"
+          else
+            echo "CHECK health-live: FAIL (expected 200, got $HEALTH_STATUS)"
+            CHECK_HEALTH="FAIL"
+            FAILED=1
+          fi
+
+          # SPA root endpoint bundling check (#66)
+          SPA_HEADERS=$(mktemp)
+          SPA_BODY=$(mktemp)
+          SPA_STATUS=$(curl -sS -D "$SPA_HEADERS" -o "$SPA_BODY" -w '%{http_code}' http://127.0.0.1:8080/ 2>/dev/null || true)
+          SPA_CONTENT_TYPE=$(grep -i '^content-type:' "$SPA_HEADERS" 2>/dev/null | head -n 1 | cut -d':' -f2- | tr -d '\r\n' | sed -e 's/^[[:space:]]*//' || true)
+          echo "SPA root endpoint: status=$SPA_STATUS, content-type=$SPA_CONTENT_TYPE"
+
+          if [ "$SPA_STATUS" = "200" ] && echo "$SPA_CONTENT_TYPE" | grep -qi 'text/html' && grep -qi '<html' "$SPA_BODY"; then
+            echo "CHECK spa-root: PASS"
+            CHECK_SPA="PASS"
+          else
+            echo "CHECK spa-root: FAIL (status=$SPA_STATUS, content-type=$SPA_CONTENT_TYPE)"
+            CHECK_SPA="FAIL"
+            FAILED=1
+          fi
+          rm -f "$SPA_HEADERS" "$SPA_BODY"
+
+          # (b) Non-root execution
+          API_UID=$(docker exec "$API_CONTAINER" id -u 2>/dev/null || echo "0")
+          echo "$API_UID"
+          API_CONFIG_USER=$(docker inspect --format '{{.Config.User}}' "$API_CONTAINER" 2>/dev/null || echo "")
+
+          if [ -n "$API_CONFIG_USER" ] && [ "$API_CONFIG_USER" != "root" ] && [ "$API_CONFIG_USER" != "0" ] && [ "$API_UID" != "0" ]; then
+            echo "CHECK api-non-root: PASS"
+            CHECK_USER="PASS"
+          else
+            echo "CHECK api-non-root: FAIL (uid=$API_UID, Config.User=$API_CONFIG_USER)"
+            CHECK_USER="FAIL"
+            FAILED=1
+          fi
+
+          # (c) Hardening options: ReadonlyRootfs, CapDrop ALL, no-new-privileges, Privileged false
+          API_INSPECT=$(docker inspect --format json "$API_CONTAINER" 2>/dev/null || echo "{}")
+          POSTGRES_INSPECT=$(docker inspect --format json "$POSTGRES_CONTAINER" 2>/dev/null || echo "{}")
+
+          API_READONLY=$(echo "$API_INSPECT" | jq -r '(if type=="array" then .[0] else . end) | .HostConfig.ReadonlyRootfs')
+          API_CAP_DROP=$(echo "$API_INSPECT" | jq -r '(if type=="array" then .[0] else . end) | .HostConfig.CapDrop // [] | contains(["ALL"])')
+          API_SEC_OPT=$(echo "$API_INSPECT" | jq -r '(if type=="array" then .[0] else . end) | .HostConfig.SecurityOpt // [] | any(test("no-new-privileges"))')
+          API_PRIVILEGED=$(echo "$API_INSPECT" | jq -r '(if type=="array" then .[0] else . end) | .HostConfig.Privileged')
+
+          PG_CAP_DROP=$(echo "$POSTGRES_INSPECT" | jq -r '(if type=="array" then .[0] else . end) | .HostConfig.CapDrop // [] | contains(["ALL"])')
+          PG_SEC_OPT=$(echo "$POSTGRES_INSPECT" | jq -r '(if type=="array" then .[0] else . end) | .HostConfig.SecurityOpt // [] | any(test("no-new-privileges"))')
+
+          if [ "$API_READONLY" = "true" ] && \
+             [ "$API_CAP_DROP" = "true" ] && \
+             [ "$API_SEC_OPT" = "true" ] && \
+             [ "$API_PRIVILEGED" = "false" ] && \
+             [ "$PG_CAP_DROP" = "true" ] && \
+             [ "$PG_SEC_OPT" = "true" ]; then
+            echo "CHECK security-hardening: PASS"
+            CHECK_SECURITY="PASS"
+          else
+            echo "CHECK security-hardening: FAIL (api: ReadonlyRootfs=$API_READONLY, CapDrop=$API_CAP_DROP, SecOpt=$API_SEC_OPT, Privileged=$API_PRIVILEGED; postgres: CapDrop=$PG_CAP_DROP, SecOpt=$PG_SEC_OPT)"
+            CHECK_SECURITY="FAIL"
+            FAILED=1
+          fi
+
+          # (d) Loopback port bindings (127.0.0.1 only, postgres 5432 bound to loopback only)
+          PORTS_OK=1
+          for cid in "$API_CONTAINER" "$POSTGRES_CONTAINER"; do
+            c_json=$(docker inspect --format json "$cid" 2>/dev/null || echo "{}")
+            ips=$(echo "$c_json" | jq -r '
+              (if type=="array" then .[0] else . end) |
+              [
+                (.HostConfig.PortBindings // {} | to_entries[].value[]?.HostIp),
+                (.NetworkSettings.Ports // {} | to_entries[].value[]?.HostIp)
+              ] | map(select(. != null and . != "")) | unique | .[]
+            ')
+            if [ -z "$ips" ]; then
+              echo "No port bindings found for container $cid"
+              PORTS_OK=0
+            fi
+            for ip in $ips; do
+              if [ "$ip" != "127.0.0.1" ]; then
+                echo "Disallowed HostIp found: $ip in container $cid"
+                PORTS_OK=0
+              fi
+            done
+          done
+
+          PG_5432_IPS=$(echo "$POSTGRES_INSPECT" | jq -r '
+            (if type=="array" then .[0] else . end) |
+            [
+              (.HostConfig.PortBindings["5432/tcp"][]?.HostIp),
+              (.NetworkSettings.Ports["5432/tcp"][]?.HostIp)
+            ] | map(select(. != null and . != "")) | unique | .[]
+          ')
+          if [ -z "$PG_5432_IPS" ]; then
+            echo "Postgres 5432 port binding not found"
+            PORTS_OK=0
+          fi
+          for ip in $PG_5432_IPS; do
+            if [ "$ip" != "127.0.0.1" ]; then
+              echo "Postgres 5432 bound beyond loopback: $ip"
+              PORTS_OK=0
+            fi
+          done
+
+          if [ "$PORTS_OK" -eq 1 ]; then
+            echo "CHECK loopback-port-bindings: PASS"
+            CHECK_PORTS="PASS"
+          else
+            echo "CHECK loopback-port-bindings: FAIL (non-loopback or missing bindings)"
+            CHECK_PORTS="FAIL"
+            FAILED=1
+          fi
+
+          # (e) Verify no secret values leaked in docker inspect and forbidden env vars absent
+          set +x
+          DB_PASS_CHECK=$(cat distribution/compose/secrets/db_password.txt)
+          DB_CONN_CHECK=$(cat distribution/compose/secrets/ConnectionStrings__Database.txt)
+          SECRETS_ABSENT=1
+
+          COMBINED_INSPECT=$(docker inspect --format json "$API_CONTAINER" "$POSTGRES_CONTAINER" 2>/dev/null || echo "{}")
+
+          if echo "$COMBINED_INSPECT" | grep -F -q "$DB_PASS_CHECK"; then
+            echo "DB password leaked in docker inspect JSON"
+            SECRETS_ABSENT=0
+          fi
+
+          if echo "$COMBINED_INSPECT" | grep -F -q "$DB_CONN_CHECK"; then
+            echo "Connection string leaked in docker inspect JSON"
+            SECRETS_ABSENT=0
+          fi
+
+          CONTAINER_ENVS=$(echo "$COMBINED_INSPECT" | jq -r '(if type=="array" then .[] else . end) | .Config.Env[]? // empty')
+          if echo "$CONTAINER_ENVS" | grep -q 'ConnectionStrings__Database'; then
+            echo "Forbidden ConnectionStrings__Database variable found in container environment"
+            SECRETS_ABSENT=0
+          fi
+
+          if echo "$CONTAINER_ENVS" | grep -q 'POSTGRES_PASSWORD='; then
+            echo "Forbidden POSTGRES_PASSWORD= variable found in container environment"
+            SECRETS_ABSENT=0
+          fi
+
+          if [ "$SECRETS_ABSENT" -eq 1 ]; then
+            echo "CHECK no-secrets-in-inspect: PASS"
+            CHECK_SECRETS="PASS"
+          else
+            echo "CHECK no-secrets-in-inspect: FAIL (secrets or secret env vars detected in inspect)"
+            CHECK_SECRETS="FAIL"
+            FAILED=1
+          fi
+
+          # (f) Verify secrets reading and database initialization
+          # The app validates ConnectionStrings:Database eagerly at startup via ValidateOnStart;
+          # a healthy api container confirms a valid connection string was loaded via KeyPerFile.
+          API_SECRET_READABLE="not readable"
+          API_SECRET_BYTES="0"
+          if docker exec "$API_CONTAINER" bash -c 'test -r /run/secrets/ConnectionStrings__Database' > /dev/null 2>&1; then
+            API_SECRET_READABLE="readable"
+            API_SECRET_BYTES=$(docker exec "$API_CONTAINER" bash -c 'wc -c < /run/secrets/ConnectionStrings__Database' 2>/dev/null | tr -d '[:space:]' || echo "0")
+          fi
+          echo "API secret file status: $API_SECRET_READABLE (bytes: $API_SECRET_BYTES)"
+
+          PG_IS_READY="not ready"
+          if docker exec "$POSTGRES_CONTAINER" pg_isready -U ragpipeline -d ragpipeline > /dev/null 2>&1; then
+            PG_IS_READY="ready"
+          fi
+
+          # Note: The API does not open a DB connection yet so password match between the two files is not exercised end to end;
+          # to add some evidence, from the postgres container run psql with the password read from the secret file
+          # via PGPASSWORD=$(cat /run/secrets/db_password) over TCP to 127.0.0.1 select 1 (inside the container, value never printed) and check output is 1.
+          PSQL_SELECT_1=$(docker exec "$POSTGRES_CONTAINER" sh -c 'PGPASSWORD=$(cat /run/secrets/db_password) psql -h 127.0.0.1 -U ragpipeline -d ragpipeline -t -A -c "select 1"' 2>/dev/null | tr -d '[:space:]' || true)
+
+          if [ "$API_SECRET_READABLE" = "readable" ] && [ "$API_SECRET_BYTES" -gt 0 ] && [ "$PG_IS_READY" = "ready" ] && [ "$PSQL_SELECT_1" = "1" ]; then
+            echo "CHECK api-db-secrets-read: PASS"
+            CHECK_API_DB="PASS"
+          else
+            echo "CHECK api-db-secrets-read: FAIL (readable=$API_SECRET_READABLE, bytes=$API_SECRET_BYTES, pg_ready=$PG_IS_READY, psql=$PSQL_SELECT_1)"
+            CHECK_API_DB="FAIL"
+            FAILED=1
+          fi
+
+          # Write results table to $GITHUB_STEP_SUMMARY (no secrets)
+          sed -e 's/^[[:space:]]*//' << EOF >> "$GITHUB_STEP_SUMMARY"
+          ### Docker Compose Smoke Test Results
+
+          | Check | Result | Details |
+          | :--- | :--- | :--- |
+          | SPA Root Endpoint | $CHECK_SPA | Status $SPA_STATUS, Content-Type $SPA_CONTENT_TYPE |
+          | API Health Live | $CHECK_HEALTH | Status $HEALTH_STATUS |
+          | API Non-Root Execution | $CHECK_USER | UID $API_UID, Config.User $API_CONFIG_USER |
+          | Security Hardening | $CHECK_SECURITY | ReadonlyRootfs, CapDrop ALL, no-new-privileges, Privileged false |
+          | Loopback Port Bindings | $CHECK_PORTS | Bound strictly to 127.0.0.1 |
+          | Secrets Leak Absence | $CHECK_SECRETS | Absent from inspect JSON and environment |
+          | Secret Files & DB Auth | $CHECK_API_DB | KeyPerFile secret $API_SECRET_READABLE ($API_SECRET_BYTES bytes), psql TCP select 1 verified |
+          EOF
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "One or more smoke checks failed."
+            exit 1
+          fi
+
+      - name: Teardown and cleanup
+        if: always()
+        run: |
+          set -euo pipefail
+          set +x
+          SECRETS_DIR="distribution/compose/secrets"
+          DB_PASS=""
+          if [ -f "$SECRETS_DIR/db_password.txt" ]; then
+            DB_PASS=$(cat "$SECRETS_DIR/db_password.txt")
+          fi
+
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "Job status is '${{ job.status }}'. Printing container logs (tail 200, redacted):"
+            if [ -n "$DB_PASS" ]; then
+              docker compose -f "$COMPOSE_FILE" logs --no-color --tail 200 | sed "s|${DB_PASS}|[REDACTED]|g" || true
+            else
+              docker compose -f "$COMPOSE_FILE" logs --no-color --tail 200 || true
+            fi
+          fi
+
+          echo "Tearing down Docker Compose containers and volumes..."
+          docker compose -f "$COMPOSE_FILE" down -v --remove-orphans || true
+
+          echo "Cleaning up secrets..."
+          rm -rf "$SECRETS_DIR"
+
+          if [ ! -s "$GITHUB_STEP_SUMMARY" ] || ! grep -q "Docker Compose Smoke Test Results" "$GITHUB_STEP_SUMMARY" 2>/dev/null; then
+            sed -e 's/^[[:space:]]*//' << EOF >> "$GITHUB_STEP_SUMMARY"
+            ### Docker Compose Smoke Test Results
+
+            | Check | Result | Details |
+            | :--- | :--- | :--- |
+            | Compose Setup | FAIL | Pipeline stopped before checks completed (job status: ${{ job.status }}) |
+          EOF
+          fi
