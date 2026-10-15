@@ -1,0 +1,123 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+
+      - name: Restore dependencies
+        run: dotnet restore --locked-mode
+
+      - name: Build
+        run: dotnet build --no-restore -c Release -warnaserror
+
+      - name: Test
+        run: dotnet test --no-build -c Release --logger trx --results-directory TestResults
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: test-results
+          path: TestResults
+          if-no-files-found: warn
+
+  format:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore dependencies
+        run: dotnet restore --locked-mode
+
+      - name: Verify formatting
+        run: dotnet format --verify-no-changes --no-restore
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan repository for secrets
+        run: |
+          curl -sSL -O https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks_8.30.1_linux_x64.tar.gz" | sha256sum -c
+          tar -xzf gitleaks_8.30.1_linux_x64.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          rm -f gitleaks_8.30.1_linux_x64.tar.gz
+          gitleaks git --redact --no-banner --exit-code 1 .
+
+  dependency-advisories:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          global-json-file: global.json
+
+      - name: Restore dependencies
+        run: dotnet restore --locked-mode
+
+      - name: Check package vulnerabilities
+        run: |
+          dotnet list package --vulnerable --include-transitive | tee vulnerable-packages.txt
+
+          if grep -i -E '(unable to load the service index|\berror\b)' vulnerable-packages.txt > /dev/null; then
+            echo "::error::Failed to fetch package vulnerability data or an error occurred during vulnerability check."
+            echo "Action: Verify network connectivity to NuGet service index or resolve package restore errors."
+            exit 1
+          fi
+
+          BLOCKING_VULNS=$(awk '/> / && tolower($(NF-1)) ~ /^(high|critical)$/ { print }' vulnerable-packages.txt)
+          if [ -z "$BLOCKING_VULNS" ]; then
+            BLOCKING_VULNS=$(grep -E '>\s+.*\b(High|Critical)\b' vulnerable-packages.txt || true)
+          fi
+
+          if [ -n "$BLOCKING_VULNS" ]; then
+            echo "::error::High or Critical vulnerability detected in package dependencies:"
+            echo "$BLOCKING_VULNS"
+            echo "Action: Update affected dependencies in Directory.Packages.props to secure, non-vulnerable versions."
+            exit 1
+          fi
+
+          echo "No High or Critical severity vulnerabilities detected."
+
+  container-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build container image
+        run: docker build -f apps/api/Dockerfile -t ragpipeline-api:ci .
