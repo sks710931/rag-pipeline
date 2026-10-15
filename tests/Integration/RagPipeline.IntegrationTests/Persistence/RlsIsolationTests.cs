@@ -255,10 +255,22 @@ public class RlsIsolationTests : IAsyncLifetime
             Assert.True(ex.SqlState == "44000" || ex.SqlState == "42501");
         }
 
-        // 2. Attempt to update Tenant A's row to change tenant_id to Tenant B -> Rejected by WITH CHECK
+        await tx.RollbackAsync();
+
+        // 2. Start a fresh transaction to attempt update of Tenant A's row to change tenant_id to Tenant B -> Rejected by WITH CHECK
+        await using var tx2 = await conn.BeginTransactionAsync();
+
+        await using (var setCmd2 = conn.CreateCommand())
+        {
+            setCmd2.Transaction = tx2;
+            setCmd2.CommandText = "SELECT set_config('app.current_tenant_id', @tenantId, true);";
+            setCmd2.Parameters.AddWithValue("tenantId", _tenantAId.ToString());
+            await setCmd2.ExecuteNonQueryAsync();
+        }
+
         await using (var updateCmd = conn.CreateCommand())
         {
-            updateCmd.Transaction = tx;
+            updateCmd.Transaction = tx2;
             updateCmd.CommandText = "UPDATE tenant_profiles SET tenant_id = @tenantB WHERE tenant_id = @tenantA;";
             updateCmd.Parameters.AddWithValue("tenantA", _tenantAId);
             updateCmd.Parameters.AddWithValue("tenantB", _tenantBId);
@@ -267,7 +279,7 @@ public class RlsIsolationTests : IAsyncLifetime
             Assert.True(ex.SqlState == "44000" || ex.SqlState == "42501");
         }
 
-        await tx.RollbackAsync();
+        await tx2.RollbackAsync();
     }
 
     [Fact]
