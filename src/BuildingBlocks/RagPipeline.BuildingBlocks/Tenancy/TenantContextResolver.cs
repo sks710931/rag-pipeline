@@ -31,6 +31,12 @@ public sealed class TenantContextResolver : ITenantContextResolver
             return TenantResolutionResult.Denied(StatusCodes.Status404NotFound, "Tenant route parameter is missing or invalid.");
         }
 
+        if (_tenantContextAccessor.TenantContext != null &&
+            _tenantContextAccessor.TenantContext.TenantId == routeTenantId.Value)
+        {
+            return TenantResolutionResult.Success(_tenantContextAccessor.TenantContext);
+        }
+
         // 2. Caller authentication check
         var user = httpContext.User;
         if (user?.Identity?.IsAuthenticated != true)

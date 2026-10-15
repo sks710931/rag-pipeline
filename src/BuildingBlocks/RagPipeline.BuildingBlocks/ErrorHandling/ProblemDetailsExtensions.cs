@@ -27,6 +27,8 @@ public static class ProblemDetailsExtensions
                 {
                     problem.Type = problem.Status switch
                     {
+                        StatusCodes.Status401Unauthorized => "https://tools.ietf.org/html/rfc9110#section-15.5.2",
+                        StatusCodes.Status403Forbidden => "https://tools.ietf.org/html/rfc9110#section-15.5.4",
                         StatusCodes.Status404NotFound => "https://tools.ietf.org/html/rfc9110#section-15.5.5",
                         StatusCodes.Status500InternalServerError => "https://tools.ietf.org/html/rfc9110#section-15.6.1",
                         StatusCodes.Status400BadRequest => "https://tools.ietf.org/html/rfc9110#section-15.5.1",
@@ -67,14 +69,20 @@ public static class ProblemDetailsExtensions
             {
                 Type = statusCode switch
                 {
+                    StatusCodes.Status401Unauthorized => "https://tools.ietf.org/html/rfc9110#section-15.5.2",
+                    StatusCodes.Status403Forbidden => "https://tools.ietf.org/html/rfc9110#section-15.5.4",
                     StatusCodes.Status404NotFound => "https://tools.ietf.org/html/rfc9110#section-15.5.5",
                     StatusCodes.Status400BadRequest => "https://tools.ietf.org/html/rfc9110#section-15.5.1",
+                    StatusCodes.Status500InternalServerError => "https://tools.ietf.org/html/rfc9110#section-15.6.1",
                     _ => $"https://httpstatuses.io/{statusCode}"
                 },
                 Title = statusCode switch
                 {
+                    StatusCodes.Status401Unauthorized => "Unauthorized",
+                    StatusCodes.Status403Forbidden => "Forbidden",
                     StatusCodes.Status404NotFound => "Not Found",
                     StatusCodes.Status400BadRequest => "Bad Request",
+                    StatusCodes.Status500InternalServerError => "Internal Server Error",
                     _ => "Error"
                 },
                 Status = statusCode,
