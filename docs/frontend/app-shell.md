@@ -39,7 +39,7 @@ The shell structure is defined in `src/shared/layout/AppShell.tsx`:
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
 │ Header (banner)                                                        │
-│ [Mobile Menu Trigger]  Pixel RAG      [Sign In]  [Setup]  [Status]     │
+│ [Mobile Menu Trigger]  Pixel RAG                               [Status]│
 ├───────────────────┬────────────────────────────────────────────────────┤
 │ Desktop Sidebar   │ Main Content (main id="main-content")              │
 │ (aside / nav)     │                                                    │
@@ -60,7 +60,7 @@ The shell structure is defined in `src/shared/layout/AppShell.tsx`:
 | Component     | File Path                            | Primary Role                                                                                 |
 | ------------- | ------------------------------------ | -------------------------------------------------------------------------------------------- |
 | `AppShell`    | `src/shared/layout/AppShell.tsx`     | Master responsive container managing landmarks, drawer lifecycle, and layout composition.    |
-| `Header`      | `src/shared/components/Header.tsx`   | Top banner containing branding, mobile disclosure trigger button, and public route links.    |
+| `Header`      | `src/shared/components/Header.tsx`   | Top banner containing branding, mobile disclosure trigger button, and model-derived navigation links. |
 | `Breadcrumbs` | `src/shared/layout/Breadcrumbs.tsx`  | Accessible breadcrumb navigation (`nav aria-label="Breadcrumb"`) with `aria-current="page"`. |
 | `PageLayout`  | `src/shared/layout/PageLayout.tsx`   | Standardized header container for pages (heading, description, and actions slot).            |
 | `Drawer`      | `src/shared/ui/Drawer.tsx`           | Accessible slide-over overlay reused for mobile navigation.                                  |
@@ -90,7 +90,9 @@ export type Session =
     | { kind: "authenticated"; tenantName: string; userDisplayName: string };
 ```
 
-### 3.1 Initial Navigation Inventory
+### 3.1 Initial Navigation Inventories
+
+#### Sidebar Navigation (`DEFAULT_NAVIGATION_ITEMS`)
 
 | ID          | Label         | Path      | Status        | Presentation                                                                  |
 | ----------- | ------------- | --------- | ------------- | ----------------------------------------------------------------------------- |
@@ -98,6 +100,14 @@ export type Session =
 | `documents` | Documents     | —         | `planned`     | Non-interactive text with "Not available yet" badge (`aria-disabled="true"`). |
 | `search`    | Search        | —         | `planned`     | Non-interactive text with "Not available yet" badge (`aria-disabled="true"`). |
 | `ocr`       | OCR           | —         | `planned`     | Non-interactive text with "Not available yet" badge (`aria-disabled="true"`). |
+
+#### Header Navigation (`DEFAULT_HEADER_NAVIGATION_ITEMS`)
+
+| ID       | Label  | Path      | Status        | Presentation                                         |
+| -------- | ------ | --------- | ------------- | ---------------------------------------------------- |
+| `status` | Status | `/status` | `implemented` | Interactive `<NavLink>` with active route highlight. |
+
+Every interactive link in both the sidebar and the header is derived from the navigation model with explicit status. Unimplemented routes or temporary setup routes (e.g. `/setup` for initial owner provisioning) are dropped from permanent navigation to prevent dead ends and preserve capability truthfulness ("no permanent create-owner nav"). Any planned header links must declare `status: 'planned'` with a clear description and render non-interactively without focusability or click handlers.
 
 ### 3.2 Navigation Filtering: `visibleNavigation`
 
@@ -144,7 +154,7 @@ The tab sequence through the application shell follows strict logical hierarchy:
 1. **Skip Link**: `a[href="#main-content"]` (`Skip to main content`).
 2. **Mobile Menu Trigger**: Button visible on mobile screens (skipped or hidden on desktop).
 3. **Site Identity**: Home link (`/`) wrapping the application title.
-4. **Header Navigation Links**: `Sign In` (`/login`), `Setup` (`/setup`), `Status` (`/status`).
+4. **Header Navigation Links**: Implemented links only (`Status` `/status`). Any planned header items are non-interactive and skipped.
 5. **Sidebar Navigation Links**: Implemented links only (`System Status` `/status`).
 6. **Planned Items**: Completely skipped during Tab traversal because they lack `tabIndex` and are rendered as semantic `<div>` elements.
 7. **Breadcrumb Links**: Intermediate breadcrumbs (`Home` `/`). The current page item is a non-interactive `<span>` and is skipped.

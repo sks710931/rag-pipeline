@@ -2,12 +2,17 @@ import React from 'react';
 import { Link, NavLink } from 'react-router-dom';
 import { Menu } from 'lucide-react';
 import { cn } from '../ui/utils';
-import type { Session } from '../layout/navigation';
+import type { NavigationItem, Session } from '../layout/navigation';
+import {
+  DEFAULT_HEADER_NAVIGATION_ITEMS,
+  visibleNavigation,
+} from '../layout/navigation';
 
 export interface HeaderProps {
   onMobileNavToggle?: () => void;
   isMobileNavOpen?: boolean;
   session?: Session;
+  navigationItems?: readonly NavigationItem[];
   menuButtonRef?: React.RefObject<HTMLButtonElement | null>;
 }
 
@@ -15,8 +20,11 @@ export function Header({
   onMobileNavToggle,
   isMobileNavOpen = false,
   session = { kind: 'anonymous' },
+  navigationItems = DEFAULT_HEADER_NAVIGATION_ITEMS,
   menuButtonRef,
 }: HeaderProps = {}) {
+  const visibleItems = visibleNavigation(navigationItems, session);
+
   return (
     <header className="border-b border-neutral-200 bg-white shadow-sm">
       <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
@@ -58,50 +66,45 @@ export function Header({
             aria-label="Main Navigation"
             className="flex items-center space-x-1 sm:space-x-2"
           >
-            <NavLink
-              to="/login"
-              className={({ isActive }) =>
-                cn(
-                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-2',
-                  isActive
-                    ? 'bg-neutral-100 font-semibold text-neutral-900'
-                    : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900'
-                )
-              }
-            >
-              Sign In
-            </NavLink>
+            {visibleItems.map((item) => {
+              const isInteractive =
+                item.status === 'implemented' && Boolean(item.path);
 
-            <NavLink
-              to="/setup"
-              className={({ isActive }) =>
-                cn(
-                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-2',
-                  isActive
-                    ? 'bg-neutral-100 font-semibold text-neutral-900'
-                    : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900'
-                )
+              if (isInteractive && item.path) {
+                return (
+                  <NavLink
+                    key={item.id}
+                    to={item.path}
+                    className={({ isActive }) =>
+                      cn(
+                        'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-2',
+                        isActive
+                          ? 'bg-neutral-100 font-semibold text-neutral-900'
+                          : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900'
+                      )
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                );
               }
-            >
-              Setup
-            </NavLink>
 
-            <NavLink
-              to="/status"
-              className={({ isActive }) =>
-                cn(
-                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-2',
-                  isActive
-                    ? 'bg-neutral-100 font-semibold text-neutral-900'
-                    : 'text-neutral-600 hover:bg-neutral-50 hover:text-neutral-900'
-                )
-              }
-            >
-              Status
-            </NavLink>
+              return (
+                <div
+                  key={item.id}
+                  aria-disabled="true"
+                  className="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm text-neutral-400 select-none cursor-not-allowed"
+                >
+                  <span className="font-medium text-neutral-500">
+                    {item.label}
+                  </span>
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-xs text-neutral-500">
+                    {item.description ?? 'Not available yet'}
+                  </span>
+                </div>
+              );
+            })}
           </nav>
 
           {session.kind === 'authenticated' && (

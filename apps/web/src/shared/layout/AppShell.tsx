@@ -6,6 +6,7 @@ import { Drawer } from '../ui/Drawer';
 import { cn } from '../ui/utils';
 import { Breadcrumbs, BreadcrumbItem } from './Breadcrumbs';
 import {
+  DEFAULT_HEADER_NAVIGATION_ITEMS,
   DEFAULT_NAVIGATION_ITEMS,
   NavigationItem,
   Session,
@@ -16,6 +17,7 @@ export interface AppShellProps {
   children: React.ReactNode;
   session?: Session;
   navigationItems?: readonly NavigationItem[];
+  headerNavigationItems?: readonly NavigationItem[];
   breadcrumbs?: BreadcrumbItem[];
 }
 
@@ -88,6 +90,7 @@ export function AppShell({
   children,
   session = { kind: 'anonymous' },
   navigationItems = DEFAULT_NAVIGATION_ITEMS,
+  headerNavigationItems = DEFAULT_HEADER_NAVIGATION_ITEMS,
   breadcrumbs,
 }: AppShellProps) {
   const [isMobileNavOpen, setIsMobileNavOpen] = useState(false);
@@ -118,6 +121,7 @@ export function AppShell({
         isMobileNavOpen={isMobileNavOpen}
         onMobileNavToggle={() => setIsMobileNavOpen((prev) => !prev)}
         session={session}
+        navigationItems={headerNavigationItems}
       />
 
       <div className="flex flex-1">

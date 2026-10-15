@@ -7,18 +7,30 @@ import { AppShell } from '../AppShell';
 import { PageLayout } from '../PageLayout';
 import { Button } from '../../ui/Button';
 
+import { DEFAULT_HEADER_NAVIGATION_ITEMS } from '../navigation';
+
 const REGISTERED_ROUTES = ['/', '/login', '/setup', '/maintenance', '/status'];
 
 function TestApp({
   session,
   initialPath = '/status',
+  headerNavigationItems,
+  navigationItems,
 }: {
   session?: Parameters<typeof AppShell>[0]['session'];
   initialPath?: string;
+  headerNavigationItems?: Parameters<
+    typeof AppShell
+  >[0]['headerNavigationItems'];
+  navigationItems?: Parameters<typeof AppShell>[0]['navigationItems'];
 }) {
   return (
     <MemoryRouter initialEntries={[initialPath]}>
-      <AppShell session={session}>
+      <AppShell
+        session={session}
+        headerNavigationItems={headerNavigationItems}
+        navigationItems={navigationItems}
+      >
         <Routes>
           <Route
             path="/status"
@@ -82,7 +94,7 @@ function TestApp({
 
 describe('AppShell: Truthful Navigation & Responsive Architecture', () => {
   describe('Route and Capability Truth', () => {
-    it('ensures every interactive nav link maps strictly to a registered route', () => {
+    it('ensures every interactive nav link maps strictly to a registered route and is derived from the navigation model', () => {
       render(<TestApp initialPath="/status" />);
 
       // Query all links inside navigation landmarks
@@ -98,11 +110,76 @@ describe('AppShell: Truthful Navigation & Responsive Architecture', () => {
 
       expect(allNavLinks.length).toBeGreaterThan(0);
 
+      // Verify header interactive links are derived from DEFAULT_HEADER_NAVIGATION_ITEMS
+      const mainNav = screen.getByRole('navigation', {
+        name: 'Main Navigation',
+      });
+      const headerLinks = within(mainNav).queryAllByRole('link');
+      const implementedHeaderPaths = DEFAULT_HEADER_NAVIGATION_ITEMS.filter(
+        (item) => item.status === 'implemented'
+      ).map((item) => item.path);
+
+      expect(headerLinks.length).toBe(implementedHeaderPaths.length);
+      for (const link of headerLinks) {
+        const href = link.getAttribute('href');
+        expect(implementedHeaderPaths).toContain(href);
+      }
+
+      // No hard-coded setup or login dead-ends in header
+      expect(
+        within(mainNav).queryByRole('link', { name: /setup/i })
+      ).not.toBeInTheDocument();
+      expect(
+        within(mainNav).queryByRole('link', { name: /sign in/i })
+      ).not.toBeInTheDocument();
+
       for (const link of allNavLinks) {
         const href = link.getAttribute('href');
         expect(href).toBeTruthy();
         expect(REGISTERED_ROUTES).toContain(href);
       }
+    });
+
+    it('renders planned header items as non-interactive text with visible "Not available yet" description', () => {
+      render(
+        <TestApp
+          initialPath="/status"
+          headerNavigationItems={[
+            {
+              id: 'status',
+              label: 'Status',
+              path: '/status',
+              status: 'implemented',
+            },
+            {
+              id: 'login',
+              label: 'Sign In',
+              status: 'planned',
+              description: 'Not available yet',
+            },
+          ]}
+        />
+      );
+
+      const mainNav = screen.getByRole('navigation', {
+        name: 'Main Navigation',
+      });
+      expect(
+        within(mainNav).getByRole('link', { name: 'Status' })
+      ).toBeInTheDocument();
+      expect(
+        within(mainNav).queryByRole('link', { name: /sign in/i })
+      ).not.toBeInTheDocument();
+
+      const plannedElement = within(mainNav).getByText('Sign In');
+      const wrapper = plannedElement.closest('[aria-disabled="true"]');
+      expect(wrapper).toBeInTheDocument();
+      expect(wrapper).not.toHaveAttribute('tabindex');
+      expect(wrapper?.tagName).not.toBe('BUTTON');
+      expect(wrapper?.tagName).not.toBe('A');
+      expect(
+        within(mainNav).getByText(/not available yet/i)
+      ).toBeInTheDocument();
     });
 
     it('renders planned items as non-interactive text with visible "Not available yet" description', () => {
@@ -307,29 +384,17 @@ describe('AppShell: Truthful Navigation & Responsive Architecture', () => {
       const brandLink = screen.getByRole('link', { name: /pixel rag/i });
       expect(brandLink).toHaveFocus();
 
-      // Tab 4: Header Sign In link
+      // Tab 4: Header Status link
       await user.tab();
       const mainNav = screen.getByRole('navigation', {
         name: 'Main Navigation',
       });
-      const signInLink = within(mainNav).getByRole('link', {
-        name: /sign in/i,
-      });
-      expect(signInLink).toHaveFocus();
-
-      // Tab 5: Header Setup link
-      await user.tab();
-      const setupLink = within(mainNav).getByRole('link', { name: /setup/i });
-      expect(setupLink).toHaveFocus();
-
-      // Tab 6: Header Status link
-      await user.tab();
       const statusLink = within(mainNav).getByRole('link', {
         name: /status/i,
       });
       expect(statusLink).toHaveFocus();
 
-      // Tab 7: Sidebar System Status link
+      // Tab 5: Sidebar System Status link
       await user.tab();
       const sidebarNav = screen.getByRole('navigation', {
         name: 'Sidebar Navigation',
@@ -339,7 +404,7 @@ describe('AppShell: Truthful Navigation & Responsive Architecture', () => {
       });
       expect(sidebarStatusLink).toHaveFocus();
 
-      // Tab 8: Tab forward must SKIP Documents, Search, OCR, and focus Breadcrumbs Home link!
+      // Tab 6: Tab forward must SKIP Documents, Search, OCR, and focus Breadcrumbs Home link!
       await user.tab();
       const breadcrumbsNav = screen.getByRole('navigation', {
         name: 'Breadcrumb',

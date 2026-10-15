@@ -23,7 +23,7 @@ export type Session =
   | { kind: 'authenticated'; tenantName: string; userDisplayName: string };
 
 /**
- * Default application navigation items.
+ * Default application sidebar navigation items.
  *
  * Implemented today: System status (/status) only.
  * Planned items (Documents, Search, OCR) are declared with status 'planned'
@@ -58,6 +58,25 @@ export const DEFAULT_NAVIGATION_ITEMS: readonly NavigationItem[] = [
     status: 'planned',
     description: 'Not available yet',
     icon: ScanText,
+  },
+] as const;
+
+/**
+ * Default header / public navigation items.
+ *
+ * Every interactive link in the header is derived from this model with explicit status.
+ * Implemented today: Status (/status) only.
+ * Unimplemented routes or temporary setup routes (e.g. /setup for owner provisioning)
+ * are excluded from permanent navigation to prevent dead ends and maintain capability
+ * truthfulness ("no permanent create-owner nav"). Any planned header links must declare
+ * status 'planned' with a clear description and render non-interactively.
+ */
+export const DEFAULT_HEADER_NAVIGATION_ITEMS: readonly NavigationItem[] = [
+  {
+    id: 'status',
+    label: 'Status',
+    path: '/status',
+    status: 'implemented',
   },
 ] as const;
 

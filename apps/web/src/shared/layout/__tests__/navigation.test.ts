@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_HEADER_NAVIGATION_ITEMS,
   DEFAULT_NAVIGATION_ITEMS,
   NavigationItem,
   Session,
@@ -23,6 +24,31 @@ describe('Navigation Model & Capability Truthfulness', () => {
       expect(item).toBeDefined();
       expect(item?.status).toBe('planned');
       expect(item?.description).toBe('Not available yet');
+    }
+  });
+
+  it('defines truthful header items where only implemented capabilities are interactive', () => {
+    const statusItem = DEFAULT_HEADER_NAVIGATION_ITEMS.find(
+      (item) => item.id === 'status'
+    );
+    expect(statusItem).toBeDefined();
+    expect(statusItem?.status).toBe('implemented');
+    expect(statusItem?.path).toBe('/status');
+    expect(statusItem?.label).toBe('Status');
+
+    // Setup must NOT be a permanent navigation item (no permanent create-owner nav)
+    expect(
+      DEFAULT_HEADER_NAVIGATION_ITEMS.find((item) => item.id === 'setup')
+    ).toBeUndefined();
+
+    // Every interactive item in the header model must have an explicit path and implemented status
+    for (const item of DEFAULT_HEADER_NAVIGATION_ITEMS) {
+      if (item.status === 'implemented') {
+        expect(item.path).toBeDefined();
+        expect(item.path?.startsWith('/')).toBe(true);
+      } else {
+        expect(item.description).toBeDefined();
+      }
     }
   });
 
@@ -89,6 +115,19 @@ describe('Navigation Model & Capability Truthfulness', () => {
       expect(visible).toHaveLength(DEFAULT_NAVIGATION_ITEMS.length);
       expect(visible.map((i) => i.id)).toEqual(
         DEFAULT_NAVIGATION_ITEMS.map((i) => i.id)
+      );
+    });
+
+    it('preserves all default header navigation items for anonymous users', () => {
+      const session: Session = { kind: 'anonymous' };
+      const visible = visibleNavigation(
+        DEFAULT_HEADER_NAVIGATION_ITEMS,
+        session
+      );
+
+      expect(visible).toHaveLength(DEFAULT_HEADER_NAVIGATION_ITEMS.length);
+      expect(visible.map((i) => i.id)).toEqual(
+        DEFAULT_HEADER_NAVIGATION_ITEMS.map((i) => i.id)
       );
     });
   });
