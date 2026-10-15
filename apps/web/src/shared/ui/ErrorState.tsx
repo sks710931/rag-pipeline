@@ -15,7 +15,8 @@ export interface ErrorStateProps extends React.HTMLAttributes<HTMLDivElement> {
   errorDetails?: string;
   icon?: LucideIcon;
   action?: ErrorStateAction | React.ReactNode;
-  headingLevel?: 'h2' | 'h3' | 'h4';
+  headingLevel?: 'h1' | 'h2' | 'h3' | 'h4';
+  autoFocusHeading?: boolean;
 }
 
 export function ErrorState({
@@ -25,9 +26,18 @@ export function ErrorState({
   icon: Icon = AlertOctagon,
   action,
   headingLevel: HeadingTag = 'h3',
+  autoFocusHeading = false,
   className,
   ...rest
 }: ErrorStateProps) {
+  const headingRef = React.useRef<HTMLHeadingElement>(null);
+
+  React.useEffect(() => {
+    if (autoFocusHeading) {
+      headingRef.current?.focus();
+    }
+  }, [autoFocusHeading]);
+
   const isActionObject =
     action &&
     typeof action === 'object' &&
@@ -47,7 +57,11 @@ export function ErrorState({
         <Icon className="h-6 w-6" aria-hidden="true" />
       </div>
 
-      <HeadingTag className="mt-4 text-base font-semibold text-error-900">
+      <HeadingTag
+        ref={headingRef}
+        tabIndex={autoFocusHeading ? -1 : undefined}
+        className="mt-4 text-base font-semibold text-error-900 focus:outline-none"
+      >
         {title}
       </HeadingTag>
 

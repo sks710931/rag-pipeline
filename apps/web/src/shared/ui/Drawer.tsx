@@ -204,7 +204,7 @@ export function Drawer({
               onClick={onClose}
               aria-label={closeLabel}
               className={cn(
-                'rounded-md p-1.5 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700',
+                'rounded-md p-1.5 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-1',
                 'transition-colors'
               )}

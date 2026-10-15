@@ -51,6 +51,8 @@ All semantic colors are mapped as CSS custom properties (`--color-*`) in `src/in
 | **Error Button** | Red | White (`#ffffff`) | `--color-error-600` (`#dc2626`) | 4.6:1 | Pass (>= 4.5:1) |
 | **Info** | Sky (`50`–`950`) | `--color-info-800` (`#075985`) | `--color-info-50` (`#f0f9ff`) | 7.2:1 | Pass (>= 4.5:1) |
 
+neutral-400 must not be used for text, placeholders or meaningful icons on white.
+
 ### 1.5 Focus Ring Utility
 Interactive components support visible focus via `.focus-ring` or Tailwind `focus-visible:ring-2 focus-visible:ring-brand-600`:
 - **Color**: `--color-focus-ring: #2563eb;`
@@ -171,7 +173,7 @@ All primitives are located in `src/shared/ui/` with explicit TypeScript prop int
 ## 3. Dev-Only Sample Composition & Layout Limitation Note
 
 ### 3.1 Product Route Policy
-Dev-only living sample pages or kitchen sinks **must not ship as product routes**. No route for sample exploration is added to `App.tsx` or any routing table.
+Dev-only living sample pages or kitchen sinks **must not ship as product routes**. No route for sample exploration is added to `App.tsx` or any routing table. Production routes and public shell UX are defined separately in [`docs/frontend/routing.md`](./routing.md).
 
 ### 3.2 Vitest-Rendered Sample Composition
 Instead, the design system provides `src/shared/ui/SampleComposition.tsx`, an in-memory React component composing all design tokens and primitives together. It is exercised under Vitest test suites:

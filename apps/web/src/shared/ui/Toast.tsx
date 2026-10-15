@@ -148,7 +148,7 @@ export function ToastItem({ toast, onDismiss }: ToastItemProps) {
         onClick={() => onDismiss(id)}
         aria-label="Dismiss notification"
         className={cn(
-          'shrink-0 rounded p-1 text-neutral-400 hover:bg-neutral-100 hover:text-neutral-700',
+          'shrink-0 rounded p-1 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-600 focus-visible:ring-offset-1',
           'transition-colors'
         )}

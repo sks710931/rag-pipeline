@@ -64,7 +64,7 @@ export const TextField = forwardRef<HTMLInputElement, TextFieldProps>(
             aria-invalid={Boolean(error)}
             aria-describedby={describedByIds || undefined}
             className={cn(
-              'block w-full rounded-md border px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-400',
+              'block w-full rounded-md border px-3 py-2 text-sm text-neutral-900 placeholder:text-neutral-500',
               'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2',
               'transition-colors disabled:cursor-not-allowed disabled:bg-neutral-100 disabled:text-neutral-500',
               error
