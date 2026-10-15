@@ -173,7 +173,7 @@ All primitives are located in `src/shared/ui/` with explicit TypeScript prop int
 ## 3. Dev-Only Sample Composition & Layout Limitation Note
 
 ### 3.1 Product Route Policy
-Dev-only living sample pages or kitchen sinks **must not ship as product routes**. No route for sample exploration is added to `App.tsx` or any routing table.
+Dev-only living sample pages or kitchen sinks **must not ship as product routes**. No route for sample exploration is added to `App.tsx` or any routing table. Production routes and public shell UX are defined separately in [`docs/frontend/routing.md`](./routing.md).
 
 ### 3.2 Vitest-Rendered Sample Composition
 Instead, the design system provides `src/shared/ui/SampleComposition.tsx`, an in-memory React component composing all design tokens and primitives together. It is exercised under Vitest test suites:
