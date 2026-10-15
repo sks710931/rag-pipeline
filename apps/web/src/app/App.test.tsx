@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { axe } from 'vitest-axe';
@@ -68,7 +68,7 @@ describe('Public Route Shell and Maintenance UX', () => {
       });
     });
 
-    it('renders header landmark with application title and nav links', async () => {
+    it('renders header landmark with application title and nav links derived from model', async () => {
       mockHealthApi();
       render(<App />);
 
@@ -81,10 +81,14 @@ describe('Public Route Shell and Maintenance UX', () => {
       const nav = screen.getByRole('navigation', { name: /main navigation/i });
       expect(nav).toBeInTheDocument();
       expect(
-        screen.getByRole('link', { name: /sign in/i })
+        within(nav).getByRole('link', { name: /status/i })
       ).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /setup/i })).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /status/i })).toBeInTheDocument();
+      expect(
+        within(nav).queryByRole('link', { name: /sign in/i })
+      ).not.toBeInTheDocument();
+      expect(
+        within(nav).queryByRole('link', { name: /setup/i })
+      ).not.toBeInTheDocument();
 
       await waitFor(() => {
         expect(
@@ -476,20 +480,20 @@ describe('Public Route Shell and Maintenance UX', () => {
       const loginHeading = screen.getByRole('heading', { name: /sign in/i });
       expect(loginHeading).toHaveFocus();
 
-      // Click "Setup" in header nav
-      const setupNavLink = screen.getByRole('link', { name: /^setup$/i });
-      await user.click(setupNavLink);
+      // Click "Status" in header nav
+      const statusNavLink = screen.getByRole('link', { name: /^status$/i });
+      await user.click(statusNavLink);
 
       await waitFor(() => {
-        expect(window.location.pathname).toBe('/setup');
+        expect(window.location.pathname).toBe('/status');
       });
 
-      const setupHeading = screen.getByRole('heading', {
-        name: /system setup/i,
+      const statusHeading = screen.getByRole('heading', {
+        name: /system status/i,
       });
-      expect(setupHeading).toBeInTheDocument();
-      expect(setupHeading).toHaveFocus();
-      expect(document.title).toBe('Setup | Pixel RAG');
+      expect(statusHeading).toBeInTheDocument();
+      expect(statusHeading).toHaveFocus();
+      expect(document.title).toBe('System Status | Pixel RAG');
     });
 
     it('supports real browser back button navigation', async () => {
@@ -508,12 +512,12 @@ describe('Public Route Shell and Maintenance UX', () => {
         ).toBeInTheDocument();
       });
 
-      // Navigate to /setup
-      const setupNavLink = screen.getByRole('link', { name: /^setup$/i });
-      await user.click(setupNavLink);
+      // Navigate to /status
+      const statusNavLink = screen.getByRole('link', { name: /^status$/i });
+      await user.click(statusNavLink);
 
       await waitFor(() => {
-        expect(window.location.pathname).toBe('/setup');
+        expect(window.location.pathname).toBe('/status');
       });
 
       // Trigger browser back
