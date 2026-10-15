@@ -1,0 +1,15 @@
+.git
+bin
+obj
+TestResults
+.github
+docs
+node_modules
+*.user
+.env*
+**/bin
+**/obj
+**/TestResults
+**/node_modules
+**/*.user
+**/.env*
