@@ -3,6 +3,7 @@ namespace RagPipeline.IntegrationTests.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using RagPipeline.Persistence;
+using RagPipeline.Persistence.Interceptors;
 using Testcontainers.PostgreSql;
 using Xunit;
 
@@ -73,12 +74,17 @@ public class PostgresFixture : IAsyncLifetime
         return new RagPipelineDbContext(options);
     }
 
-    public RagPipelineDbContext CreateRuntimeDbContext()
+    public RagPipelineDbContext CreateRuntimeDbContext(bool withInterceptors = true)
     {
-        var options = new DbContextOptionsBuilder<RagPipelineDbContext>()
-            .UseNpgsql(RuntimeConnectionString, o => o.MigrationsHistoryTable("__EFMigrationsHistory", "public"))
-            .Options;
-        return new RagPipelineDbContext(options);
+        var builder = new DbContextOptionsBuilder<RagPipelineDbContext>()
+            .UseNpgsql(RuntimeConnectionString, o => o.MigrationsHistoryTable("__EFMigrationsHistory", "public"));
+
+        if (withInterceptors)
+        {
+            builder.AddInterceptors(new TenantSecurityCommandInterceptor(), new PooledConnectionResetInterceptor());
+        }
+
+        return new RagPipelineDbContext(builder.Options);
     }
 
     public async Task DisposeAsync()

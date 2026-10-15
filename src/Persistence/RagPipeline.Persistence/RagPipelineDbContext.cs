@@ -200,4 +200,39 @@ public class RagPipelineDbContext : IdentityUserContext<ApplicationUser, Guid, I
             b.Property(a => a.DetailsJson).HasColumnName("details_json").HasColumnType("jsonb");
         });
     }
+
+    public Guid? ActiveTenantTransactionId { get; internal set; }
+
+    public virtual async Task<Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction> BeginTenantTransactionAsync(
+        Guid tenantId,
+        CancellationToken cancellationToken = default)
+    {
+        if (tenantId == Guid.Empty)
+        {
+            throw new ArgumentException("TenantId cannot be empty.", nameof(tenantId));
+        }
+
+        var transaction = await Database.BeginTransactionAsync(cancellationToken);
+        ActiveTenantTransactionId = tenantId;
+
+        await Database.ExecuteSqlRawAsync(
+            "SELECT set_config('app.current_tenant_id', {0}, true);",
+            [tenantId.ToString()],
+            cancellationToken);
+
+        return new TenantDbContextTransaction(transaction, this);
+    }
+
+    public override void Dispose()
+    {
+        ActiveTenantTransactionId = null;
+        base.Dispose();
+    }
+
+    public override async ValueTask DisposeAsync()
+    {
+        ActiveTenantTransactionId = null;
+        await base.DisposeAsync();
+    }
 }
+
