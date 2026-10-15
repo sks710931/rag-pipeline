@@ -74,17 +74,31 @@ test.describe('Pixel RAG Accessibility & Visual State Audit (WCAG 2.2 AA)', () =
     await expect(menuToggle).toBeFocused();
   });
 
-  test('Respects prefers-reduced-motion media query', async ({ page }) => {
+  test('Respects prefers-reduced-motion media query on animating elements', async ({
+    page,
+  }) => {
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.goto('/status');
     await page.waitForLoadState('domcontentloaded');
 
-    // Verify computed animation duration is reduced to 0.01ms per design-system.md
-    const animationDuration = await page.evaluate(() => {
-      const el = document.querySelector('#main-content') ?? document.body;
-      return window.getComputedStyle(el).animationDuration;
+    // Verify an element with active animation has duration overridden to 0.01ms and count to 1
+    const animationOverride = await page.evaluate(() => {
+      const animatedEl = document.createElement('div');
+      animatedEl.className = 'animate-spin';
+      document.body.appendChild(animatedEl);
+      const computed = window.getComputedStyle(animatedEl);
+      const result = {
+        duration: computed.animationDuration,
+        iterationCount: computed.animationIterationCount,
+      };
+      animatedEl.remove();
+      return result;
     });
 
-    expect(['0s', '0.00001s', '0.01ms', '0ms']).toContain(animationDuration);
+    // 0.01ms computes to 0.00001s in Chromium / WebKit
+    expect(['0.00001s', '0.01ms', '0.000010s']).toContain(
+      animationOverride.duration
+    );
+    expect(animationOverride.iterationCount).toBe('1');
   });
 });

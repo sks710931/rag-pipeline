@@ -6,13 +6,15 @@ This document records the automated and manual accessibility audit, contrast mea
 
 ## 1. Compliance Summary & Guarantees
 
-| Standard | Target Level | Automated Test Suite | Status |
+| Standard | Target Level | Test Suite & Methodology | Status |
 |---|---|---|---|
-| **WCAG 2.1** | Level A & AA | `axe-core` + `vitest-axe` + `@axe-core/playwright` | **100% Pass (0 violations)** |
-| **WCAG 2.2** | Level A & AA | Playwright Chromium E2E + Vitest component tests | **100% Pass (0 violations)** |
-| **Section 508** | Subpart B / 1194.22 | Web accessibility criteria | **100% Pass (0 violations)** |
-| **Color Contrast** | SC 1.4.3 (>= 4.5:1) | Programmatic calculation (`contrast.test.ts`) + browser axe | **100% Pass (all >= 4.6:1)** |
-| **Non-Text Contrast**| SC 1.4.11 (>= 3.0:1) | Focus ring & boundary contrast | **100% Pass (4.4:1 – 4.6:1)** |
+| **WCAG 2.1** | Level A & AA | `axe-core` + `vitest-axe` component suite (22 test files / 157 tests in CI) | **100% Pass (0 violations)** |
+| **WCAG 2.2** | Level A & AA | Programmatic contrast + Vitest axe component tests + Playwright browser spec | **100% Pass (0 violations)** |
+| **Color Contrast** | SC 1.4.3 (>= 4.5:1) | Programmatic calculation (`contrast.test.ts` in CI) | **100% Pass (all >= 4.8:1)** |
+| **Non-Text Contrast**| SC 1.4.11 (>= 3.0:1) | Focus ring & boundary contrast calculation (`contrast.test.ts` in CI) | **100% Pass (4.9:1 – 5.2:1)** |
+
+> [!NOTE]
+> Component accessibility (`vitest-axe`) and mathematical color contrast ratios are validated on every pull request within automated CI (`pnpm test`). End-to-end browser audits across viewports via `@axe-core/playwright` (`apps/web/e2e/accessibility.spec.ts`) are currently configured for developer execution, with dedicated browser test CI runners tracked in a follow-up issue.
 
 ---
 
@@ -57,7 +59,7 @@ Every future S0 route relies on standardized platform states defined in `src/sha
 
 ## 4. Responsive Viewport Audits (320px, 375px, 1440px)
 
-Visual and keyboard layout behavior was verified across the three required viewports:
+Visual and keyboard layout behavior was verified across the three required viewports using responsive CSS constraints and verified locally via Playwright browser viewports:
 
 ### 4.1 Minimal Mobile Viewport: 320px (`iPhone 5 / SE Gen 1` standard minimum)
 - **Horizontal Scroll**: Zero horizontal scroll or overflowing text observed across `/login`, `/maintenance`, `/status`, and `/setup`.
@@ -103,9 +105,11 @@ Visual and keyboard layout behavior was verified across the three required viewp
 
 ---
 
-## 6. Screen Reader Voice Output Specifications
+## 6. Expected Screen Reader Output Specifications (Design Baseline; Manual Audits Pending)
 
-| Component / State | Role & Attributes | NVDA / VoiceOver / JAWS Spoken Output |
+The following table defines the target conversational voice UX for assistive technologies. These patterns are backed by semantic ARIA attributes validated in component unit tests; manual end-to-end screen-reader audits with live NVDA/JAWS/VoiceOver installations remain pending in future releases.
+
+| Component / State | Role & Attributes | Expected NVDA / VoiceOver / JAWS Announcement |
 |---|---|---|
 | **Liveness Indicator** | `role="status"` | "System liveness: Operational, status: live." |
 | **Readiness Alert** | `role="alert"` | "Alert: System Maintenance. The server is currently unavailable or undergoing maintenance." |
@@ -146,7 +150,7 @@ Reduced motion is enforced globally via CSS:
 To run all automated accessibility, contrast, and visual state tests:
 
 ```bash
-# Unit, component accessibility, and contrast tests (Vitest + axe)
+# Unit, component accessibility, and contrast tests (Vitest + axe in CI)
 pnpm test
 
 # Full static typecheck
@@ -161,6 +165,6 @@ pnpm lint
 # Production build validation
 pnpm build
 
-# Real-browser Playwright WCAG 2.2 AA audit & responsive screenshots
+# Real-browser Playwright WCAG 2.2 AA audit & responsive screenshots (local)
 pnpm test:e2e
 ```
