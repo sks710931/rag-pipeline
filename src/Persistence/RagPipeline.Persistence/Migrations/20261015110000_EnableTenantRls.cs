@@ -16,7 +16,6 @@ namespace RagPipeline.Persistence.Migrations
                 ALTER TABLE tenant_profiles FORCE ROW LEVEL SECURITY;
 
                 CREATE POLICY tenant_isolation_policy ON tenant_profiles
-                    AS RESTRICTIVE
                     USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
                     WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
 
@@ -25,7 +24,6 @@ namespace RagPipeline.Persistence.Migrations
                 ALTER TABLE tenant_memberships FORCE ROW LEVEL SECURITY;
 
                 CREATE POLICY tenant_isolation_policy ON tenant_memberships
-                    AS RESTRICTIVE
                     USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
                     WITH CHECK (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid);
             ");
