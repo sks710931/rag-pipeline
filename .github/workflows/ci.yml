@@ -260,6 +260,45 @@ jobs:
           docker compose -f "$COMPOSE_FILE" up -d --build --wait --wait-timeout 180
           echo "CHECK compose-up: PASS"
 
+      - name: Canary log scan (throwaway)
+        run: |
+          set -euo pipefail
+
+          CANARY=$(printf '%s%s' 'CNRYPULSE-' 'q81zx7k2-NOT-A-REAL-SECRET')
+
+          API_IMAGE=$(docker compose -f "$COMPOSE_FILE" config --images 2>/dev/null | grep 'api' | head -n 1)
+          if [ -z "$API_IMAGE" ]; then
+            API_IMAGE=$(docker compose -f "$COMPOSE_FILE" images api 2>/dev/null | awk 'NR>1 {print $2}' | head -n 1)
+          fi
+          if [ -z "$API_IMAGE" ]; then
+            API_IMAGE=$(docker compose -f "$COMPOSE_FILE" images -q api 2>/dev/null || true)
+          fi
+
+          docker run -d --name canary-api -p 18080:8080 \
+            -e "ConnectionStrings__Database=Host=localhost;Database=x;Username=x;Password=$CANARY" \
+            -e "Canary__ApiKey=$CANARY" \
+            -e ASPNETCORE_ENVIRONMENT=Production \
+            "$API_IMAGE"
+
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18080/api/v1/system/health/live > /dev/null 2>&1 || curl -fsS http://localhost:18080/api/v1/system/health/live > /dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          curl -sS -H "Authorization: Bearer $CANARY" -H "X-Api-Key: $CANARY" "http://127.0.0.1:18080/api/v1/system/health/ready?token=$CANARY" > /dev/null 2>&1 || true
+          curl -sS -H "Authorization: Bearer $CANARY" -H "X-Api-Key: $CANARY" "http://127.0.0.1:18080/non-existent-path?token=$CANARY" > /dev/null 2>&1 || true
+          curl -sS -H "Authorization: Bearer $CANARY" -H "X-Api-Key: $CANARY" "http://127.0.0.1:18080/api/v1/non-existent-path?token=$CANARY" > /dev/null 2>&1 || true
+
+          sleep 1
+
+          docker logs canary-api || true
+          N=$(docker logs canary-api 2>&1 | grep -c -F "$CANARY" || true)
+          echo "CANARY-LOCAL-CHECK: occurrences in container logs = $N"
+
+          docker rm -f canary-api || true
+
       - name: Run compose smoke checks
         run: |
           set -euo pipefail
