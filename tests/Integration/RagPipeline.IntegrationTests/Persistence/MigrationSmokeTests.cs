@@ -79,6 +79,12 @@ public class MigrationSmokeTests
                 Assert.DoesNotContain(token, table, StringComparison.OrdinalIgnoreCase);
             }
         }
+
+        // Verify bootstrap singleton row is seeded
+        await using var seedCheckCmd = conn.CreateCommand();
+        seedCheckCmd.CommandText = "SELECT status FROM deployment_bootstrap_state WHERE id = 1;";
+        var status = (string?)await seedCheckCmd.ExecuteScalarAsync();
+        Assert.Equal("UNINITIALIZED", status);
     }
 
     [Fact]

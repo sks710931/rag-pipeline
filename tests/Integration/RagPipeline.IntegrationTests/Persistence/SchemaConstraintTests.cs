@@ -241,4 +241,80 @@ public class SchemaConstraintTests
         var deleteEx = await Assert.ThrowsAsync<PostgresException>(() => deleteCmd.ExecuteNonQueryAsync());
         Assert.Contains("audit_events is append-only", deleteEx.Message);
     }
+
+    [Fact]
+    public async Task Schema_BootstrapState_RejectsInvalidStatus()
+    {
+        if (!_fixture.DockerAvailable)
+        {
+            return;
+        }
+
+        await using var conn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "UPDATE deployment_bootstrap_state SET status = 'INVALID_STATUS' WHERE id = 1;";
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteNonQueryAsync());
+        Assert.Contains("chk_bootstrap_status", ex.Message);
+    }
+
+    [Fact]
+    public async Task Schema_BootstrapState_CannotBeDeleted()
+    {
+        if (!_fixture.DockerAvailable)
+        {
+            return;
+        }
+
+        await using var conn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "DELETE FROM deployment_bootstrap_state WHERE id = 1;";
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteNonQueryAsync());
+        Assert.Contains("deployment_bootstrap_state rows cannot be deleted", ex.Message);
+    }
+
+    [Fact]
+    public async Task Schema_BootstrapState_CannotBeModifiedOnceSealed()
+    {
+        if (!_fixture.DockerAvailable)
+        {
+            return;
+        }
+
+        await using var conn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
+        await conn.OpenAsync();
+
+        // Ensure state is set to SEALED
+        await using (var sealCmd = conn.CreateCommand())
+        {
+            sealCmd.CommandText = "UPDATE deployment_bootstrap_state SET status = 'SEALED' WHERE id = 1;";
+            await sealCmd.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            // Attempting to reopen or modify once SEALED must fail trigger
+            await using var reopenCmd = conn.CreateCommand();
+            reopenCmd.CommandText = "UPDATE deployment_bootstrap_state SET status = 'UNINITIALIZED' WHERE id = 1;";
+
+            var ex = await Assert.ThrowsAsync<PostgresException>(() => reopenCmd.ExecuteNonQueryAsync());
+            Assert.Contains("deployment_bootstrap_state cannot be modified once SEALED", ex.Message);
+        }
+        finally
+        {
+            // Restore back to UNINITIALIZED for other tests by temporarily disabling trigger as superuser
+            await using var restoreCmd = conn.CreateCommand();
+            restoreCmd.CommandText = @"
+                ALTER TABLE deployment_bootstrap_state DISABLE TRIGGER trg_bootstrap_state_irreversible;
+                UPDATE deployment_bootstrap_state SET status = 'UNINITIALIZED' WHERE id = 1;
+                ALTER TABLE deployment_bootstrap_state ENABLE TRIGGER trg_bootstrap_state_irreversible;
+            ";
+            await restoreCmd.ExecuteNonQueryAsync();
+        }
+    }
 }

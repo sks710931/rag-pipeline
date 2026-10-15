@@ -69,7 +69,11 @@ public class RagPipelineDbContext : IdentityUserContext<ApplicationUser, Guid, I
         // 3. deployment_bootstrap_state
         builder.Entity<DeploymentBootstrapState>(b =>
         {
-            b.ToTable("deployment_bootstrap_state", t => t.HasCheckConstraint("chk_bootstrap_singleton", "id = 1"));
+            b.ToTable("deployment_bootstrap_state", t =>
+            {
+                t.HasCheckConstraint("chk_bootstrap_singleton", "id = 1");
+                t.HasCheckConstraint("chk_bootstrap_status", "status IN ('UNINITIALIZED', 'BOOTSTRAPPING', 'SEALED')");
+            });
             b.HasKey(s => s.Id);
             b.Property(s => s.Id).HasColumnName("id").ValueGeneratedNever();
             b.Property(s => s.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
@@ -80,6 +84,12 @@ public class RagPipelineDbContext : IdentityUserContext<ApplicationUser, Guid, I
             b.Property(s => s.SealedByUserId).HasColumnName("sealed_by_user_id");
 
             b.HasOne(s => s.SealedByUser).WithMany().HasForeignKey(s => s.SealedByUserId).OnDelete(DeleteBehavior.SetNull);
+
+            b.HasData(new DeploymentBootstrapState
+            {
+                Id = 1,
+                Status = "UNINITIALIZED"
+            });
         });
 
         // 4. deployment_owners

@@ -178,4 +178,49 @@ public class DatabaseFailureSemanticsTests
             await dropCmd.ExecuteNonQueryAsync();
         }
     }
+
+    [Fact]
+    public async Task SchemaCheck_MissingBootstrapRow_ReportsUnavailableNotUninitialized()
+    {
+        if (!_fixture.DockerAvailable)
+        {
+            return;
+        }
+
+        await using var adminConn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
+        await adminConn.OpenAsync();
+
+        // Temporarily disable trigger and remove the singleton row
+        await using (var disableCmd = adminConn.CreateCommand())
+        {
+            disableCmd.CommandText = @"
+                ALTER TABLE deployment_bootstrap_state DISABLE TRIGGER trg_bootstrap_state_irreversible;
+                DELETE FROM deployment_bootstrap_state WHERE id = 1;
+                ALTER TABLE deployment_bootstrap_state ENABLE TRIGGER trg_bootstrap_state_irreversible;
+            ";
+            await disableCmd.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            await using var context = _fixture.CreateSuperuserDbContext();
+            var reader = new BootstrapStateReader(context);
+
+            var result = await reader.GetStateAsync();
+
+            Assert.True(result.IsUnavailable, "Missing bootstrap row must report Unavailable.");
+            Assert.False(result.IsUninitialized, "Missing bootstrap row must NEVER masquerade as Uninitialized.");
+            Assert.Equal("BOOTSTRAP_STATE_MISSING", result.ReasonCode);
+        }
+        finally
+        {
+            // Restore singleton row
+            await using var restoreCmd = adminConn.CreateCommand();
+            restoreCmd.CommandText = @"
+                INSERT INTO deployment_bootstrap_state (id, status) VALUES (1, 'UNINITIALIZED')
+                ON CONFLICT (id) DO UPDATE SET status = 'UNINITIALIZED';
+            ";
+            await restoreCmd.ExecuteNonQueryAsync();
+        }
+    }
 }

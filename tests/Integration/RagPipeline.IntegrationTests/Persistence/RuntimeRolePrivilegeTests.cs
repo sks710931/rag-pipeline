@@ -125,4 +125,52 @@ public class RuntimeRolePrivilegeTests
         Assert.NotEqual("postgres", currentUser);
         Assert.NotEqual("migrator", currentUser);
     }
+
+    [Fact]
+    public async Task RuntimeRole_CannotDeleteBootstrapStateOrModifyOnceSealed()
+    {
+        if (!_fixture.DockerAvailable)
+        {
+            return;
+        }
+
+        // 1. Runtime role cannot delete bootstrap state
+        await using var runtimeConn = new NpgsqlConnection(_fixture.RuntimeConnectionString);
+        await runtimeConn.OpenAsync();
+
+        await using (var delCmd = runtimeConn.CreateCommand())
+        {
+            delCmd.CommandText = "DELETE FROM deployment_bootstrap_state WHERE id = 1;";
+            var ex = await Assert.ThrowsAsync<PostgresException>(() => delCmd.ExecuteNonQueryAsync());
+            Assert.Contains("deployment_bootstrap_state rows cannot be deleted", ex.Message);
+        }
+
+        // 2. Set to SEALED (as superuser)
+        await using var superConn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
+        await superConn.OpenAsync();
+        await using (var sealCmd = superConn.CreateCommand())
+        {
+            sealCmd.CommandText = "UPDATE deployment_bootstrap_state SET status = 'SEALED' WHERE id = 1;";
+            await sealCmd.ExecuteNonQueryAsync();
+        }
+
+        try
+        {
+            // 3. Runtime role cannot modify row once SEALED
+            await using var updateCmd = runtimeConn.CreateCommand();
+            updateCmd.CommandText = "UPDATE deployment_bootstrap_state SET status = 'UNINITIALIZED' WHERE id = 1;";
+            var ex = await Assert.ThrowsAsync<PostgresException>(() => updateCmd.ExecuteNonQueryAsync());
+            Assert.Contains("deployment_bootstrap_state cannot be modified once SEALED", ex.Message);
+        }
+        finally
+        {
+            await using var restoreCmd = superConn.CreateCommand();
+            restoreCmd.CommandText = @"
+                ALTER TABLE deployment_bootstrap_state DISABLE TRIGGER trg_bootstrap_state_irreversible;
+                UPDATE deployment_bootstrap_state SET status = 'UNINITIALIZED' WHERE id = 1;
+                ALTER TABLE deployment_bootstrap_state ENABLE TRIGGER trg_bootstrap_state_irreversible;
+            ";
+            await restoreCmd.ExecuteNonQueryAsync();
+        }
+    }
 }

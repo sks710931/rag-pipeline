@@ -128,6 +128,7 @@ namespace RagPipeline.Persistence.Migrations
                 {
                     table.PrimaryKey("PK_deployment_bootstrap_state", x => x.id);
                     table.CheckConstraint("chk_bootstrap_singleton", "id = 1");
+                    table.CheckConstraint("chk_bootstrap_status", "status IN ('UNINITIALIZED', 'BOOTSTRAPPING', 'SEALED')");
                     table.ForeignKey(
                         name: "FK_deployment_bootstrap_state_asp_net_users_sealed_by_user_id",
                         column: x => x.sealed_by_user_id,
@@ -265,6 +266,11 @@ namespace RagPipeline.Persistence.Migrations
                 column: "slug",
                 unique: true);
 
+            migrationBuilder.InsertData(
+                table: "deployment_bootstrap_state",
+                columns: new[] { "id", "status" },
+                values: new object[] { 1, "UNINITIALIZED" });
+
             // Trigger: Prevent UPDATE and DELETE on audit_events
             migrationBuilder.Sql(@"
                 CREATE OR REPLACE FUNCTION trg_prevent_audit_events_mutation()
@@ -295,11 +301,34 @@ namespace RagPipeline.Persistence.Migrations
                 BEFORE UPDATE ON tenant_memberships
                 FOR EACH ROW EXECUTE FUNCTION trg_prevent_membership_mutation();
             ");
+
+            // Trigger: Prevent DELETE and prevent UPDATE once status is SEALED on deployment_bootstrap_state
+            migrationBuilder.Sql(@"
+                CREATE OR REPLACE FUNCTION trg_prevent_bootstrap_state_mutation()
+                RETURNS trigger AS $$
+                BEGIN
+                    IF TG_OP = 'DELETE' THEN
+                        RAISE EXCEPTION 'deployment_bootstrap_state rows cannot be deleted';
+                    END IF;
+                    IF TG_OP = 'UPDATE' AND OLD.status = 'SEALED' THEN
+                        RAISE EXCEPTION 'deployment_bootstrap_state cannot be modified once SEALED';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+
+                CREATE TRIGGER trg_bootstrap_state_irreversible
+                BEFORE UPDATE OR DELETE ON deployment_bootstrap_state
+                FOR EACH ROW EXECUTE FUNCTION trg_prevent_bootstrap_state_mutation();
+            ");
         }
 
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.Sql("DROP TRIGGER IF EXISTS trg_bootstrap_state_irreversible ON deployment_bootstrap_state;");
+            migrationBuilder.Sql("DROP FUNCTION IF EXISTS trg_prevent_bootstrap_state_mutation();");
+
             migrationBuilder.Sql("DROP TRIGGER IF EXISTS trg_audit_events_no_update_delete ON audit_events;");
             migrationBuilder.Sql("DROP FUNCTION IF EXISTS trg_prevent_audit_events_mutation();");
 

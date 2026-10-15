@@ -39,7 +39,12 @@ public class BootstrapStateReader : IBootstrapStateReader
                 .AsNoTracking()
                 .FirstOrDefaultAsync(s => s.Id == DeploymentBootstrapState.SingletonId, cancellationToken);
 
-            if (state == null || string.Equals(state.Status, "UNINITIALIZED", StringComparison.OrdinalIgnoreCase))
+            if (state == null)
+            {
+                return BootstrapStateResult.Unavailable("BOOTSTRAP_STATE_MISSING");
+            }
+
+            if (string.Equals(state.Status, "UNINITIALIZED", StringComparison.OrdinalIgnoreCase))
             {
                 return BootstrapStateResult.Uninitialized();
             }
@@ -49,7 +54,7 @@ public class BootstrapStateReader : IBootstrapStateReader
                 return BootstrapStateResult.Sealed();
             }
 
-            return BootstrapStateResult.Unavailable($"UNKNOWN_BOOTSTRAP_STATE: {state.Status}");
+            return BootstrapStateResult.Unavailable($"BOOTSTRAP_STATE_{state.Status.ToUpperInvariant()}");
         }
         catch (PostgresException ex) when (ex.SqlState == "42501")
         {
