@@ -5,7 +5,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using RagPipeline.BuildingBlocks.Modules;
+using RagPipeline.BuildingBlocks.Readiness;
 
 public sealed class DeploymentCapabilitiesModule : IModule
 {
@@ -13,7 +15,7 @@ public sealed class DeploymentCapabilitiesModule : IModule
 
     public void RegisterModule(IServiceCollection services, IConfiguration configuration)
     {
-        // Minimal registration for S0-001
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IReadinessCheck, DatabaseReadinessCheck>());
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints)
@@ -23,45 +25,14 @@ public sealed class DeploymentCapabilitiesModule : IModule
         healthGroup.MapGet("/live", () => Results.Ok(new { status = "live" }))
             .AllowAnonymous();
 
-        healthGroup.MapGet("/ready", (IConfiguration configuration) =>
+        healthGroup.MapGet("/ready", async (IServiceProvider sp, IConfiguration configuration, CancellationToken cancellationToken) =>
         {
-            var dbConfigured = !string.IsNullOrWhiteSpace(configuration.GetConnectionString("Database")
-                ?? configuration["ConnectionStrings:Database"]);
+            var checks = sp.GetServices<IReadinessCheck>();
+            var report = await ReadinessAggregator.AggregateAsync(checks, configuration, cancellationToken);
 
-            var qdrantConfigured = IsDependencyConfigured(configuration, "Qdrant", "Qdrant:Endpoint", "Qdrant:Url", "ConnectionStrings:Qdrant");
-            var aiConfigured = IsDependencyConfigured(configuration, "Ai", "Ai:ApiKey", "Ai:Endpoint", "OpenAi:ApiKey");
-            var azureConfigured = IsDependencyConfigured(configuration, "Azure", "Azure:ApiKey", "Azure:Endpoint", "Azure:OcrEndpoint");
-
-            return Results.Ok(new
-            {
-                status = "ready",
-                dependencies = new
-                {
-                    database = dbConfigured ? "configured" : "not_configured",
-                    qdrant = qdrantConfigured ? "configured" : "not_configured",
-                    ai = aiConfigured ? "configured" : "not_configured",
-                    azure = azureConfigured ? "configured" : "not_configured"
-                }
-            });
+            return report.IsReady
+                ? Results.Ok(report)
+                : Results.Json(report, statusCode: StatusCodes.Status503ServiceUnavailable, contentType: "application/json");
         }).AllowAnonymous();
-    }
-
-    private static bool IsDependencyConfigured(IConfiguration configuration, string sectionName, params string[] explicitKeys)
-    {
-        foreach (var key in explicitKeys)
-        {
-            if (!string.IsNullOrWhiteSpace(configuration[key]))
-            {
-                return true;
-            }
-        }
-
-        var section = configuration.GetSection(sectionName);
-        if (section.Exists() && section.GetChildren().Any(c => !string.IsNullOrWhiteSpace(c.Value)))
-        {
-            return true;
-        }
-
-        return false;
     }
 }

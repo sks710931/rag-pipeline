@@ -3,7 +3,11 @@ namespace RagPipeline.IntegrationTests;
 using System.Net;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using RagPipeline.BuildingBlocks.Readiness;
 using Xunit;
 
 public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>>
@@ -33,13 +37,45 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task GetReady_WhenOptionalDependenciesAbsent_ReturnsReadyWithNotConfigured()
+    public async Task GetReady_ByDefault_Returns503_WithDatabaseUnchecked()
     {
         using var client = _factory.CreateClient();
 
         var response = await client.GetAsync("/api/v1/system/health/ready");
 
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+
+        var content = await response.Content.ReadAsStringAsync();
+        using var jsonDoc = JsonDocument.Parse(content);
+        var root = jsonDoc.RootElement;
+
+        Assert.Equal("not_ready", root.GetProperty("status").GetString());
+
+        var dependencies = root.GetProperty("dependencies");
+        Assert.Equal("unchecked", dependencies.GetProperty("database").GetString());
+        Assert.Equal("not_configured", dependencies.GetProperty("qdrant").GetString());
+        Assert.Equal("not_configured", dependencies.GetProperty("ai").GetString());
+        Assert.Equal("not_configured", dependencies.GetProperty("azure").GetString());
+    }
+
+    [Fact]
+    public async Task GetReady_WhenDatabaseCheckReplacedWithReadyFake_Returns200_WithStatusReady()
+    {
+        using var customFactory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IReadinessCheck>();
+                services.AddSingleton<IReadinessCheck>(new FakeReadyDatabaseCheck());
+            });
+        });
+
+        using var client = customFactory.CreateClient();
+        var response = await client.GetAsync("/api/v1/system/health/ready");
+
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
 
         var content = await response.Content.ReadAsStringAsync();
         using var jsonDoc = JsonDocument.Parse(content);
@@ -48,7 +84,7 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal("ready", root.GetProperty("status").GetString());
 
         var dependencies = root.GetProperty("dependencies");
-        Assert.Equal("configured", dependencies.GetProperty("database").GetString());
+        Assert.Equal("ready", dependencies.GetProperty("database").GetString());
         Assert.Equal("not_configured", dependencies.GetProperty("qdrant").GetString());
         Assert.Equal("not_configured", dependencies.GetProperty("ai").GetString());
         Assert.Equal("not_configured", dependencies.GetProperty("azure").GetString());
@@ -73,12 +109,19 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
                     ["Azure:ApiKey"] = fakeAzureKey
                 });
             });
+
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<IReadinessCheck>();
+                services.AddSingleton<IReadinessCheck>(new FakeReadyDatabaseCheck());
+            });
         });
 
         using var client = customFactory.CreateClient();
         var response = await client.GetAsync("/api/v1/system/health/ready");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
 
         var content = await response.Content.ReadAsStringAsync();
         using var jsonDoc = JsonDocument.Parse(content);
@@ -87,7 +130,7 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal("ready", root.GetProperty("status").GetString());
 
         var dependencies = root.GetProperty("dependencies");
-        Assert.Equal("configured", dependencies.GetProperty("database").GetString());
+        Assert.Equal("ready", dependencies.GetProperty("database").GetString());
         Assert.Equal("configured", dependencies.GetProperty("qdrant").GetString());
         Assert.Equal("configured", dependencies.GetProperty("ai").GetString());
         Assert.Equal("configured", dependencies.GetProperty("azure").GetString());
@@ -96,5 +139,15 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
         Assert.DoesNotContain(fakeQdrantKey, content);
         Assert.DoesNotContain(fakeAiKey, content);
         Assert.DoesNotContain(fakeAzureKey, content);
+    }
+
+    private sealed class FakeReadyDatabaseCheck : IReadinessCheck
+    {
+        public string Name => "database";
+
+        public Task<ReadinessResult> CheckAsync(CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult(ReadinessResult.Ready());
+        }
     }
 }
