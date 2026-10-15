@@ -22,7 +22,12 @@ public sealed class DeploymentCapabilitiesModule : IModule
     {
         var healthGroup = endpoints.MapGroup("/api/v1/system/health");
 
-        healthGroup.MapGet("/live", () => Results.Ok(new { status = "live" }))
+        healthGroup.MapGet("/live", () => Results.Ok(new LiveHealthResponse("live")))
+            .WithName("GetLiveHealth")
+            .WithTags("Health")
+            .WithSummary("Liveness probe")
+            .Produces<LiveHealthResponse>(StatusCodes.Status200OK, "application/json")
+            .ProducesProblem(StatusCodes.Status500InternalServerError, "application/problem+json")
             .AllowAnonymous();
 
         healthGroup.MapGet("/ready", async (IServiceProvider sp, IConfiguration configuration, CancellationToken cancellationToken) =>
@@ -33,6 +38,13 @@ public sealed class DeploymentCapabilitiesModule : IModule
             return report.IsReady
                 ? Results.Ok(report)
                 : Results.Json(report, statusCode: StatusCodes.Status503ServiceUnavailable, contentType: "application/json");
-        }).AllowAnonymous();
+        })
+        .WithName("GetReadyHealth")
+        .WithTags("Health")
+        .WithSummary("Readiness probe")
+        .Produces<ReadinessReport>(StatusCodes.Status200OK, "application/json")
+        .Produces<ReadinessReport>(StatusCodes.Status503ServiceUnavailable, "application/json")
+        .ProducesProblem(StatusCodes.Status500InternalServerError, "application/problem+json")
+        .AllowAnonymous();
     }
 }

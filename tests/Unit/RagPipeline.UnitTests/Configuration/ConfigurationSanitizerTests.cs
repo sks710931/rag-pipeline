@@ -6,6 +6,9 @@ using Xunit;
 
 public class ConfigurationSanitizerTests
 {
+    private const string CanaryPassword = "CANARY-super-secret-password-xyz";
+    private const string CanaryToken = "CANARY-api-token-987654";
+
     [Fact]
     public void Sanitize_WithOptionsValidationException_IncludesOptionNameAndSanitizedFailures()
     {
@@ -34,6 +37,46 @@ public class ConfigurationSanitizerTests
         Assert.Contains("secret=***", sanitized);
         Assert.DoesNotContain("SECRETVALUE123", sanitized);
         Assert.DoesNotContain("MY_TOP_SECRET_TOKEN", sanitized);
+    }
+
+    [Fact]
+    public void Sanitize_CanaryConnectionStringPasswordAndToken_NeverAppearsInSanitizeOutput()
+    {
+        var rawMessage = $"Configuration failed for Host=db.internal;Password={CanaryPassword};Token={CanaryToken};Timeout=30";
+
+        var sanitizedMessage = ConfigurationSanitizer.SanitizeMessage(rawMessage);
+
+        Assert.DoesNotContain(CanaryPassword, sanitizedMessage);
+        Assert.DoesNotContain(CanaryToken, sanitizedMessage);
+        Assert.Contains("Password=***", sanitizedMessage);
+        Assert.Contains("Token=***", sanitizedMessage);
+
+        var exception = new OptionsValidationException("DatabaseOptions", typeof(DatabaseOptions), new[] { rawMessage });
+        var sanitizedException = ConfigurationSanitizer.Sanitize(exception);
+
+        Assert.DoesNotContain(CanaryPassword, sanitizedException);
+        Assert.DoesNotContain(CanaryToken, sanitizedException);
+        Assert.Contains("Password=***", sanitizedException);
+        Assert.Contains("Token=***", sanitizedException);
+    }
+
+    [Fact]
+    public void Sanitize_WithOptionsValidationException_MultipleOptionTypesHandledGracefully()
+    {
+        var failures = new List<string>
+        {
+            "ReverseProxy:KnownProxies:0 is not a valid IP address",
+            "Configuration key 'ConnectionStrings:Database' is missing required key(s): Host"
+        };
+        // Simulated multiple option failure where OptionsType is object and name is empty (standard in ASP.NET Core StartupValidator)
+        var exception = new OptionsValidationException(string.Empty, typeof(object), failures);
+
+        var result = ConfigurationSanitizer.Sanitize(exception);
+
+        Assert.DoesNotContain("Object", result);
+        Assert.Contains("Configuration validation failed:", result);
+        Assert.Contains("ReverseProxy:KnownProxies:0", result);
+        Assert.Contains("ConnectionStrings:Database", result);
     }
 
     [Fact]

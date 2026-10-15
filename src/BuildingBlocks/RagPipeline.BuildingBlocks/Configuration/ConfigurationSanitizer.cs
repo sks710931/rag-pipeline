@@ -13,17 +13,64 @@ public static class ConfigurationSanitizer
     {
         ArgumentNullException.ThrowIfNull(exception);
 
-        var lines = new List<string>
-        {
-            $"Configuration validation failed for '{exception.OptionsType.Name}':"
-        };
+        var typeName = exception.OptionsType?.Name;
+        var header = !string.IsNullOrWhiteSpace(typeName) && typeName != "Object"
+            ? $"Configuration validation failed for '{typeName}':"
+            : !string.IsNullOrWhiteSpace(exception.OptionsName)
+                ? $"Configuration validation failed for '{exception.OptionsName}':"
+                : "Configuration validation failed:";
 
-        foreach (var failure in exception.Failures)
+        var lines = new List<string> { header };
+
+        var failures = exception.Failures ?? Enumerable.Empty<string>();
+        var hasFailures = false;
+
+        foreach (var failure in failures)
         {
-            lines.Add($"  - {SanitizeMessage(failure)}");
+            if (!string.IsNullOrWhiteSpace(failure))
+            {
+                lines.Add($"  - {SanitizeMessage(failure)}");
+                hasFailures = true;
+            }
         }
 
-        return string.Join(Environment.NewLine, lines);
+        if (!hasFailures && !string.IsNullOrWhiteSpace(exception.Message))
+        {
+            lines.Add($"  - {SanitizeMessage(exception.Message)}");
+        }
+
+        var result = string.Join(Environment.NewLine, lines);
+        return RagPipeline.BuildingBlocks.Observability.SensitiveDataRedactor.Redact(result) ?? result;
+    }
+
+    public static string Sanitize(AggregateException aggregateException)
+    {
+        ArgumentNullException.ThrowIfNull(aggregateException);
+
+        var optionsExceptions = aggregateException.InnerExceptions.OfType<OptionsValidationException>().ToList();
+        if (optionsExceptions.Count > 0)
+        {
+            return string.Join(Environment.NewLine, optionsExceptions.Select(Sanitize));
+        }
+
+        return SanitizeMessage(aggregateException.Message);
+    }
+
+    public static string Sanitize(Exception exception)
+    {
+        ArgumentNullException.ThrowIfNull(exception);
+
+        if (exception is OptionsValidationException optionsEx)
+        {
+            return Sanitize(optionsEx);
+        }
+
+        if (exception is AggregateException aggEx)
+        {
+            return Sanitize(aggEx);
+        }
+
+        return SanitizeMessage(exception.Message);
     }
 
     public static string SanitizeMessage(string? message)
@@ -52,6 +99,8 @@ public static class ConfigurationSanitizer
 
             return match.Value;
         });
+
+        sanitized = RagPipeline.BuildingBlocks.Observability.SensitiveDataRedactor.Redact(sanitized) ?? sanitized;
 
         return sanitized;
     }
