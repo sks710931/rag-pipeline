@@ -22,6 +22,7 @@ COPY apps/api/RagPipeline.Api/*.csproj apps/api/RagPipeline.Api/packages.lock.js
 COPY src/BuildingBlocks/RagPipeline.BuildingBlocks/*.csproj src/BuildingBlocks/RagPipeline.BuildingBlocks/packages.lock.json ./src/BuildingBlocks/RagPipeline.BuildingBlocks/
 COPY src/DeploymentCapabilities/RagPipeline.DeploymentCapabilities/*.csproj src/DeploymentCapabilities/RagPipeline.DeploymentCapabilities/packages.lock.json ./src/DeploymentCapabilities/RagPipeline.DeploymentCapabilities/
 COPY src/IdentityAccess/RagPipeline.IdentityAccess/*.csproj src/IdentityAccess/RagPipeline.IdentityAccess/packages.lock.json ./src/IdentityAccess/RagPipeline.IdentityAccess/
+COPY src/Persistence/RagPipeline.Persistence/*.csproj src/Persistence/RagPipeline.Persistence/packages.lock.json ./src/Persistence/RagPipeline.Persistence/
 COPY src/TenantManagement/RagPipeline.TenantManagement/*.csproj src/TenantManagement/RagPipeline.TenantManagement/packages.lock.json ./src/TenantManagement/RagPipeline.TenantManagement/
 COPY tests/Integration/RagPipeline.IntegrationTests/*.csproj tests/Integration/RagPipeline.IntegrationTests/packages.lock.json ./tests/Integration/RagPipeline.IntegrationTests/
 COPY tests/Unit/RagPipeline.UnitTests/*.csproj tests/Unit/RagPipeline.UnitTests/packages.lock.json ./tests/Unit/RagPipeline.UnitTests/

@@ -171,7 +171,10 @@ public class DatabaseFailureSemanticsTests
         finally
         {
             await using var dropCmd = adminConn.CreateCommand();
-            dropCmd.CommandText = $"DROP ROLE IF EXISTS \"{restrictedUser}\";";
+            dropCmd.CommandText = $@"
+                DROP OWNED BY ""{restrictedUser}"" CASCADE;
+                DROP ROLE IF EXISTS ""{restrictedUser}"";
+            ";
             await dropCmd.ExecuteNonQueryAsync();
         }
     }

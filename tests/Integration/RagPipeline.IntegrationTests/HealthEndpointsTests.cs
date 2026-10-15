@@ -37,7 +37,7 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
-    public async Task GetReady_ByDefault_Returns503_WithDatabaseUnchecked()
+    public async Task GetReady_WhenDatabaseDown_Returns503_WithDatabaseNotReady()
     {
         using var client = _factory.CreateClient();
 
@@ -53,7 +53,7 @@ public class HealthEndpointsTests : IClassFixture<WebApplicationFactory<Program>
         Assert.Equal("not_ready", root.GetProperty("status").GetString());
 
         var dependencies = root.GetProperty("dependencies");
-        Assert.Equal("unchecked", dependencies.GetProperty("database").GetString());
+        Assert.Equal("not_ready", dependencies.GetProperty("database").GetString());
         Assert.Equal("not_configured", dependencies.GetProperty("qdrant").GetString());
         Assert.Equal("not_configured", dependencies.GetProperty("ai").GetString());
         Assert.Equal("not_configured", dependencies.GetProperty("azure").GetString());
