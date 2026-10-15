@@ -52,7 +52,7 @@ Use a **modular monolith** with vertical feature folders. Code organization may 
 │   │   └── Features/                     # bootstrap, login, logout, sessions, password, recovery
 │   ├── TenantManagement/
 │   │   └── Features/                     # initial tenant profile, current context only in S0
-│   ├── DeploymentSetup/
+│   ├── DeploymentCapabilities/
 │   │   └── Features/                     # bootstrap state, capability catalog, health, wizard
 │   └── SecretManagement/
 │       └── Features/                     # protector activation, vault, recovery, rotation
