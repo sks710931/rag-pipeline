@@ -35,6 +35,8 @@ Check health endpoints:
 curl -i http://localhost:5000/api/v1/system/health/live
 curl -i http://localhost:5000/api/v1/system/health/ready
 ```
+The `/ready` endpoint returns HTTP 503 while any required dependency check (such as the database) is unchecked or not ready, returning HTTP 200 only when all required dependencies are ready.
+
 
 ### Reproducing Sanitized Config Failure
 

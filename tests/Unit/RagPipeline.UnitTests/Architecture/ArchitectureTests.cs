@@ -119,12 +119,88 @@ public class ArchitectureTests
         }
     }
 
+    [Fact]
+    public void ModuleCsprojFiles_OnlyHaveProjectReferenceToBuildingBlocks()
+    {
+        var repoRoot = FindRepoRoot();
+        var srcDir = Path.Combine(repoRoot, "src");
+        var csprojFiles = Directory.GetFiles(srcDir, "*.csproj", SearchOption.AllDirectories);
+
+        Assert.NotEmpty(csprojFiles);
+
+        foreach (var csprojFile in csprojFiles)
+        {
+            var content = File.ReadAllText(csprojFile);
+            AssertModuleProjectReferencesOnlyReferenceBuildingBlocks(content, Path.GetFileName(csprojFile));
+        }
+    }
+
+    [Fact]
+    public void Helper_FlagsModuleCsproj_ReferencingAnotherModule_EvenWithNoTypeUsage()
+    {
+        var inMemoryCsproj = """
+            <Project Sdk="Microsoft.NET.Sdk">
+              <ItemGroup>
+                <ProjectReference Include="..\..\BuildingBlocks\RagPipeline.BuildingBlocks\RagPipeline.BuildingBlocks.csproj" />
+                <ProjectReference Include="..\..\IdentityAccess\RagPipeline.IdentityAccess\RagPipeline.IdentityAccess.csproj" />
+              </ItemGroup>
+            </Project>
+            """;
+
+        var disallowedReferences = FindDisallowedModuleProjectReferences(inMemoryCsproj);
+
+        Assert.NotEmpty(disallowedReferences);
+        Assert.Contains(disallowedReferences, r => r.Contains("RagPipeline.IdentityAccess", StringComparison.OrdinalIgnoreCase));
+
+        Assert.ThrowsAny<Exception>(() =>
+            AssertModuleProjectReferencesOnlyReferenceBuildingBlocks(inMemoryCsproj, "InMemorySampleWithCrossModuleReference"));
+    }
+
+    internal static IReadOnlyList<string> FindDisallowedModuleProjectReferences(string csprojXmlContent)
+    {
+        var doc = XDocument.Parse(csprojXmlContent);
+        return FindDisallowedModuleProjectReferences(doc);
+    }
+
+    internal static IReadOnlyList<string> FindDisallowedModuleProjectReferences(XDocument doc)
+    {
+        var projectReferences = doc.Descendants("ProjectReference")
+            .Select(e => (string?)e.Attribute("Include") ?? string.Empty)
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .ToList();
+
+        var disallowed = new List<string>();
+        foreach (var reference in projectReferences)
+        {
+            var normalized = reference.Replace('\\', '/');
+            var projectName = Path.GetFileNameWithoutExtension(normalized);
+
+            var isBuildingBlocks = string.Equals(projectName, "RagPipeline.BuildingBlocks", StringComparison.OrdinalIgnoreCase)
+                || normalized.EndsWith("/RagPipeline.BuildingBlocks.csproj", StringComparison.OrdinalIgnoreCase);
+
+            if (!isBuildingBlocks)
+            {
+                disallowed.Add(reference);
+            }
+        }
+
+        return disallowed;
+    }
+
+    internal static void AssertModuleProjectReferencesOnlyReferenceBuildingBlocks(string csprojXmlContent, string? projectIdentifier = null)
+    {
+        var disallowed = FindDisallowedModuleProjectReferences(csprojXmlContent);
+        Assert.True(
+            disallowed.Count == 0,
+            $"Module project '{projectIdentifier ?? "in-memory"}' contains disallowed ProjectReference(s): {string.Join(", ", disallowed)}. Modules may only reference BuildingBlocks.");
+    }
+
     private static string FindRepoRoot()
     {
         var dir = AppContext.BaseDirectory;
         while (!string.IsNullOrEmpty(dir))
         {
-            if (File.Exists(Path.Combine(dir, "RagPipeline.slnx")) || File.Exists(Path.Combine(dir, "global.json")))
+            if (File.Exists(Path.Combine(dir, "RagPipeline.slnx")))
             {
                 return dir;
             }
@@ -138,6 +214,6 @@ public class ArchitectureTests
             dir = parent.FullName;
         }
 
-        return Directory.GetCurrentDirectory();
+        throw new InvalidOperationException("Could not locate repository root containing RagPipeline.slnx.");
     }
 }
