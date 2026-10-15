@@ -64,10 +64,12 @@ public class MigrationSmokeTests
         ";
 
         var actualTables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        await using var reader = await cmd.ExecuteReaderAsync();
-        while (await reader.ReadAsync())
+        await using (var reader = await cmd.ExecuteReaderAsync())
         {
-            actualTables.Add(reader.GetString(0));
+            while (await reader.ReadAsync())
+            {
+                actualTables.Add(reader.GetString(0));
+            }
         }
 
         Assert.Equal(expectedTables, actualTables);
