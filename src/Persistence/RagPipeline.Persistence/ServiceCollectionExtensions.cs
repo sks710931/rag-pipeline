@@ -45,6 +45,7 @@ public static class ServiceCollectionExtensions
             });
 
             services.AddScoped<IBootstrapStateReader, BootstrapStateReader>();
+            services.AddScoped<IBootstrapStateService, BootstrapStateService>();
             services.AddScoped<IDeploymentOwnerLookup, EfDeploymentOwnerLookup>();
             services.AddScoped<ITenantMembershipLookup, EfTenantMembershipLookup>();
             services.AddScoped<ITenantProfileStore, EfTenantProfileStore>();

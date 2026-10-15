@@ -104,7 +104,8 @@ public class AuthorizationHandlerTests
         var anonymousAllowlist = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "/api/v1/system/health/live",
-            "/api/v1/system/health/ready"
+            "/api/v1/system/health/ready",
+            "/api/v1/bootstrap/status"
         };
 
         foreach (var endpoint in endpoints)

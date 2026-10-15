@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using RagPipeline.BuildingBlocks.Authorization;
 using RagPipeline.BuildingBlocks.Modules;
+using RagPipeline.BuildingBlocks.Persistence;
 using RagPipeline.BuildingBlocks.Readiness;
 
 public sealed record DeploymentAdminStatusResponse(string Status, DateTimeOffset Timestamp);
@@ -72,5 +73,51 @@ public sealed class DeploymentCapabilitiesModule : IModule
             .ProducesProblem(StatusCodes.Status401Unauthorized, "application/problem+json")
             .ProducesProblem(StatusCodes.Status403Forbidden, "application/problem+json")
             .RequireAuthorization(Policies.KeyRootAndBootstrapAdmin);
+
+        var bootstrapGroup = endpoints.MapGroup("/api/v1/bootstrap");
+
+        bootstrapGroup.MapGet("/status", async (
+            HttpContext httpContext,
+            IServiceProvider serviceProvider,
+            CancellationToken cancellationToken) =>
+        {
+            httpContext.Response.Headers.CacheControl = "no-store, no-cache";
+
+            var bootstrapService = serviceProvider.GetService<IBootstrapStateService>();
+            if (bootstrapService == null)
+            {
+                return Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Service Unavailable",
+                    detail: "DATABASE_UNAVAILABLE",
+                    type: "https://tools.ietf.org/html/rfc9457");
+            }
+
+            var result = await bootstrapService.GetStatusAsync(cancellationToken);
+            if (result.IsUnavailable)
+            {
+                return Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Service Unavailable",
+                    detail: result.ReasonCode ?? "DATABASE_UNAVAILABLE",
+                    type: "https://tools.ietf.org/html/rfc9457");
+            }
+
+            var stateString = result.Kind switch
+            {
+                BootstrapStateKind.Uninitialized => "UNINITIALIZED",
+                BootstrapStateKind.Bootstrapping => "BOOTSTRAPPING",
+                BootstrapStateKind.Sealed => "SEALED",
+                _ => "SEALED"
+            };
+
+            return Results.Ok(new BootstrapStatusResponse(stateString));
+        })
+        .WithName("GetBootstrapStatus")
+        .WithTags("Bootstrap")
+        .WithSummary("Get deployment bootstrap status")
+        .Produces<BootstrapStatusResponse>(StatusCodes.Status200OK, "application/json")
+        .ProducesProblem(StatusCodes.Status503ServiceUnavailable, "application/problem+json")
+        .AllowAnonymous();
     }
 }

@@ -3,6 +3,7 @@ namespace RagPipeline.BuildingBlocks.Persistence;
 public enum BootstrapStateKind
 {
     Uninitialized,
+    Bootstrapping,
     Sealed,
     Unavailable
 }
@@ -21,11 +22,15 @@ public sealed record BootstrapStateResult
 
     public bool IsUninitialized => Kind == BootstrapStateKind.Uninitialized;
 
+    public bool IsBootstrapping => Kind == BootstrapStateKind.Bootstrapping;
+
     public bool IsSealed => Kind == BootstrapStateKind.Sealed;
 
     public bool IsUnavailable => Kind == BootstrapStateKind.Unavailable;
 
     public static BootstrapStateResult Uninitialized() => new(BootstrapStateKind.Uninitialized, null);
+
+    public static BootstrapStateResult Bootstrapping() => new(BootstrapStateKind.Bootstrapping, null);
 
     public static BootstrapStateResult Sealed() => new(BootstrapStateKind.Sealed, null);
 
