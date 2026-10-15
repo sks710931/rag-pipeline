@@ -35,7 +35,7 @@ describe('SampleComposition', () => {
       screen.getByRole('heading', { name: /loading skeletons/i })
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('heading', { name: /empty & error states/i })
+      screen.getByRole('heading', { name: /canonical platform states/i })
     ).toBeInTheDocument();
 
     // Run axe-core smoke check across the whole rendered composition

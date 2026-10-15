@@ -2,3 +2,4 @@ node_modules
 dist
 dist-ssr
 pnpm-lock.yaml
+e2e/screenshots

@@ -49,6 +49,9 @@ Thumbs.db
 node_modules/
 apps/web/dist/
 .pnpm-debug.log*
+.pnpm-store/
+playwright-report/
+test-results/
 
 ## Docker Compose
 distribution/compose/.env

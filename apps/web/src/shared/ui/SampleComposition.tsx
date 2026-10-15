@@ -2,10 +2,9 @@ import { useState } from 'react';
 import {
   Button,
   Drawer,
-  EmptyState,
-  ErrorState,
   Modal,
   PasswordField,
+  PlatformState,
   Skeleton,
   StatusBadge,
   StatusMessage,
@@ -326,37 +325,95 @@ export function SampleComposition() {
         </div>
       </section>
 
-      {/* Empty & Error States Section */}
+      {/* Canonical Platform States Section */}
       <section
         aria-labelledby="states-heading"
         className="space-y-6 rounded-lg border border-neutral-200 bg-white p-6 shadow-sm"
       >
-        <h2
-          id="states-heading"
-          className="text-lg font-semibold text-neutral-900"
-        >
-          Empty & Error States
-        </h2>
+        <div className="border-b border-neutral-200 pb-3">
+          <h2
+            id="states-heading"
+            className="text-lg font-semibold text-neutral-900"
+          >
+            Canonical Platform States
+          </h2>
+          <p className="mt-1 text-sm text-neutral-600">
+            Validated visual and interaction baseline for error, loading,
+            forbidden, empty, expired session, recovery pending, and success
+            states.
+          </p>
+        </div>
 
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-          <EmptyState
+          <PlatformState
+            type="error"
+            title="Database Connection Lost"
+            description="The primary PostgreSQL cluster failed health checks on port 5432."
+            details="Npgsql.NpgsqlException: Connection refused (0x0000274D) host 'postgres:5432'"
+            action={{
+              label: 'Retry Connection',
+              onClick: () => {},
+            }}
+          />
+
+          <PlatformState
+            type="loading"
+            title="Syncing Index Generation..."
+            description="Calculating vector projections and validating chunk offsets for workspace collections."
+          />
+
+          <PlatformState
+            type="forbidden"
+            title="Tenant Isolation Restricted"
+            description="You do not have the required TenantAdmin role to modify key protector settings or view deployment audit logs."
+            action={{
+              label: 'Return to Dashboard',
+              onClick: () => {},
+            }}
+          />
+
+          <PlatformState
+            type="empty"
             title="No Documents Ingested"
-            description="Upload PDF or Markdown files to begin generating embeddings."
+            description="Upload PDF, Markdown, or HTML files to begin generating embeddings and visual citations."
             action={{
               label: 'Upload Document',
               onClick: () => {},
             }}
           />
 
-          <ErrorState
-            title="Vector Storage Unreachable"
-            description="The Qdrant cluster returned a 503 Service Unavailable response."
-            errorDetails="ERR_CONNECTION_TIMED_OUT: host 'qdrant:6334'"
+          <PlatformState
+            type="expired-session"
+            title="Session Expired"
+            description="Your authenticated session has expired due to inactivity. Re-authenticate to resume."
             action={{
-              label: 'Retry Connection',
+              label: 'Sign In Again',
               onClick: () => {},
             }}
           />
+
+          <PlatformState
+            type="recovery-pending"
+            title="Master Key Recovery Required"
+            description="The key protector is locked following a hardware platform change. Supply the recovery envelope to proceed."
+            details="STATUS: LOCKED/RECOVERY_REQUIRED | Protector: tpm-cng-01"
+            action={{
+              label: 'Enter Recovery Kit',
+              onClick: () => {},
+            }}
+          />
+
+          <div className="md:col-span-2">
+            <PlatformState
+              type="success"
+              title="Key Protector Active & Verified"
+              description="Master encryption key initialized. Offline recovery envelope exported and verified successfully."
+              action={{
+                label: 'Proceed to Setup Center',
+                onClick: () => {},
+              }}
+            />
+          </div>
         </div>
       </section>
 
