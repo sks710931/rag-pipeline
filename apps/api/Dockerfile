@@ -1,5 +1,6 @@
 # Build stage
-FROM mcr.microsoft.com/dotnet/sdk:10.0.402-noble AS build
+# Multi-arch index digest; needs periodic refresh
+FROM mcr.microsoft.com/dotnet/sdk:10.0.402-noble@sha256:0d99ebf1ccad15037b5c98c9fe8979d6b8dbac23812feae2277a0b277b5c5ffa AS build
 WORKDIR /src
 
 # Copy global.json, Directory.*.props, .editorconfig, slnx, and project lock files
@@ -23,7 +24,8 @@ COPY src/ ./src/
 RUN dotnet publish apps/api/RagPipeline.Api -c Release --no-restore -o /app/publish
 
 # Runtime stage
-FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble AS runtime
+# Multi-arch index digest; needs periodic refresh
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble@sha256:d5633778c754e89a386882eddf8dbee6942447a8a4b8267c19cf1e1158d0b0ac AS runtime
 WORKDIR /app
 
 ENV ASPNETCORE_URLS=http://+:8080
