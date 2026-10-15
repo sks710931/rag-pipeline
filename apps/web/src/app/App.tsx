@@ -3,6 +3,8 @@ import { Header } from '../shared/components/Header';
 import { SkipLink } from '../shared/components/SkipLink';
 import { AppRoutes } from '../routes/AppRoutes';
 
+const throwawayGateProbe: number = 'not a number';
+
 export function AppContent() {
   return (
     <div className="min-h-screen bg-neutral-50 text-neutral-900">
