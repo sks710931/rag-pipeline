@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Options;
+using RagPipeline.Api;
 using RagPipeline.BuildingBlocks.Configuration;
 using RagPipeline.BuildingBlocks.ErrorHandling;
 using RagPipeline.BuildingBlocks.Modules;
@@ -37,6 +38,9 @@ public partial class Program
 
             // Map module endpoints
             app.MapModuleEndpoints();
+
+            // Serve static assets and SPA fallback with strict /api exclusion
+            app.UseSpaHosting();
 
             app.Run();
             return 0;
