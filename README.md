@@ -105,32 +105,49 @@ The `/ready` endpoint returns HTTP 503 while any required dependency check (such
 ### SPA Hosting & Routing Invariants
 
 When `apps/web/dist` exists (or a custom web root is configured via `Spa:Root`), `RagPipeline.Api`:
-1. Serves production static files (`/`, `/assets/*`, `/index.html`) via `UseDefaultFiles` and `UseStaticFiles`.
-2. Provides client-side SPA fallback for deep client navigation routes (e.g., `/app/status`) to `index.html`.
-3. **Strict `/api/*` Invariant:** The SPA fallback never handles any `/api/*` routes. Unmatched `/api/*` requests return HTTP 404 with Content-Type `application/problem+json` conforming to RFC 9457.
-4. **Resilience:** The API host builds, starts up, and passes tests without hard failure even if `apps/web` has not yet been built.
+1. Serves production static files (`/assets/*`, `/index.html`) via `UseStaticFiles`.
+2. Provides client-side SPA fallback for root (`/`) and deep client navigation routes (e.g., `/app/status`) to `index.html` **strictly for GET and HEAD requests that accept HTML**.
+3. **HTTP Method Invariant:** Non-GET/HEAD mutation requests (`POST`, `PUT`, `PATCH`, `DELETE`) to non-API client routes return HTTP 405 Method Not Allowed conforming to RFC 9457 `application/problem+json`, never `index.html`.
+4. **Accept Header Invariant:** Requests not accepting HTML (e.g., `Accept: application/json` on client routes) return HTTP 404 Problem Details, never `index.html`.
+5. **Strict `/api/*` Invariant:** The SPA fallback never handles any `/api/*` routes (including case variants and encoded slashes `/api%2f*`). Unmatched `/api/*` requests return HTTP 404 with Content-Type `application/problem+json` conforming to RFC 9457.
+6. **Security & Cache Headers:** All SPA and static asset responses include defense-in-depth security headers:
+   - `X-Content-Type-Options: nosniff`
+   - `Referrer-Policy: strict-origin-when-cross-origin`
+   - `X-Frame-Options: DENY`
+   - `Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'`
+   - `index.html`: `Cache-Control: no-cache`
+   - Hashed files under `/assets/*`: `Cache-Control: public, max-age=31536000, immutable`
+7. **Resilience:** The API host builds, starts up, and passes tests without hard failure even if `apps/web` has not yet been built.
 
 #### Verifying SPA Routing with curl
 
 Start the API host and verify routing behavior:
 ```bash
-# 1. Root route serves SPA index.html
-curl -s -i http://localhost:5000/ | grep -E "HTTP/|Content-Type"
+# 1. Root route serves SPA index.html with security and cache headers
+curl -s -i http://localhost:5000/ | grep -E "HTTP/|Content-Type|Cache-Control|X-Content-Type-Options"
 # HTTP/1.1 200 OK
 # Content-Type: text/html; charset=utf-8
+# Cache-Control: no-cache
+# X-Content-Type-Options: nosniff
 
 # 2. Client-side fallback route serves index.html
-curl -s -i http://localhost:5000/app/status | grep -E "HTTP/|Content-Type"
+curl -s -i http://localhost:5000/app/status | grep -E "HTTP/|Content-Type|Cache-Control"
 # HTTP/1.1 200 OK
 # Content-Type: text/html; charset=utf-8
+# Cache-Control: no-cache
 
-# 3. Live health endpoint returns JSON
+# 3. POST to client route returns RFC 9457 Problem Details 405 (NEVER index.html)
+curl -s -i -X POST http://localhost:5000/app/status
+# HTTP/1.1 405 Method Not Allowed
+# Content-Type: application/problem+json
+
+# 4. Live health endpoint returns JSON
 curl -s -i http://localhost:5000/api/v1/system/health/live
 # HTTP/1.1 200 OK
 # Content-Type: application/json; charset=utf-8
 # {"status":"live"}
 
-# 4. Unknown /api route returns RFC 9457 Problem Details 404 (NEVER index.html)
+# 5. Unknown /api route returns RFC 9457 Problem Details 404 (NEVER index.html)
 curl -s -i http://localhost:5000/api/v1/system/unknown-route-that-does-not-exist
 # HTTP/1.1 404 Not Found
 # Content-Type: application/problem+json
