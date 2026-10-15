@@ -82,7 +82,7 @@ public class IsolationPlanTests
                 ON CONFLICT DO NOTHING;
 
                 INSERT INTO tenant_profiles (tenant_id, display_name, settings_json, created_at, updated_at, concurrency_token)
-                SELECT t.id, 'Profile ' || t.name, '{}'::jsonb, clock_timestamp(), clock_timestamp(), gen_random_uuid()
+                SELECT t.id, 'Profile ' || t.name, '{{}}'::jsonb, clock_timestamp(), clock_timestamp(), gen_random_uuid()
                 FROM tenants t
                 WHERE t.name LIKE 'plan-tenant-%'
                 ON CONFLICT DO NOTHING;
