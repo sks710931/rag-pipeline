@@ -11,9 +11,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:axe": "playwright test e2e/accessibility.spec.ts",
     "format:check": "prettier --check ."
   },
   "dependencies": {
@@ -23,7 +26,9 @@
     "react-router-dom": "7.18.4"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@eslint/js": "9.21.0",
+    "@playwright/test": "1.64.0",
     "@testing-library/dom": "10.4.0",
     "@testing-library/jest-dom": "7.0.1",
     "@testing-library/react": "16.2.0",
