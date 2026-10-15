@@ -76,8 +76,8 @@ public class IsolationPlanTests
         await using (var seedCmd = superConn.CreateCommand())
         {
             seedCmd.CommandText = $@"
-                INSERT INTO asp_net_users (id, user_name, normalized_user_name, password_hash, security_stamp, concurrency_stamp, lockout_enabled, access_failed_count, email_confirmed, phone_number_confirmed, two_factor_enabled)
-                SELECT gen_random_uuid(), 'plan-user-' || g, 'PLAN-USER-' || g, 'hash', gen_random_uuid()::text, gen_random_uuid()::text, false, 0, false, false, false
+                INSERT INTO asp_net_users (id, user_name, normalized_user_name, password_hash, security_stamp, concurrency_stamp, lockout_enabled, access_failed_count)
+                SELECT gen_random_uuid(), 'plan-user-' || g, 'PLAN-USER-' || g, 'hash', gen_random_uuid()::text, gen_random_uuid()::text, false, 0
                 FROM generate_series(1, 200) g
                 ON CONFLICT DO NOTHING;
 

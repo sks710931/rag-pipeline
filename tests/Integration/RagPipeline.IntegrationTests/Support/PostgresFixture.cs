@@ -51,6 +51,7 @@ public class PostgresFixture : IAsyncLifetime
                 ALTER ROLE migrator WITH PASSWORD 'migrator_pass';
                 ALTER ROLE rag_app WITH PASSWORD 'rag_app_pass';
                 ALTER ROLE rag_probe WITH PASSWORD 'rag_probe_pass';
+                GRANT ALL ON SCHEMA public TO migrator;
                 ALTER TABLE IF EXISTS ""__EFMigrationsHistory"" OWNER TO migrator;
                 GRANT ALL ON ""__EFMigrationsHistory"" TO migrator;
             ";
