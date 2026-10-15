@@ -71,20 +71,32 @@ public static class AuditDetailsSanitizer
         return SensitiveKeyPattern.IsMatch(key);
     }
 
-    private static void SanitizeNode(JsonNode node, int maxFreeTextLength)
+    private static void SanitizeNode(JsonNode node, int maxFreeTextLength, bool parentIsSensitive = false)
     {
         if (node is JsonObject obj)
         {
             var propertiesToReplace = new System.Collections.Generic.List<string>();
             foreach (var kvp in obj)
             {
+                if (kvp.Value == null)
+                {
+                    continue;
+                }
+
                 if (IsSensitiveKey(kvp.Key))
                 {
-                    propertiesToReplace.Add(kvp.Key);
+                    if (kvp.Value is JsonObject or JsonArray)
+                    {
+                        SanitizeNode(kvp.Value, maxFreeTextLength, parentIsSensitive: true);
+                    }
+                    else
+                    {
+                        propertiesToReplace.Add(kvp.Key);
+                    }
                 }
-                else if (kvp.Value != null)
+                else
                 {
-                    SanitizeNode(kvp.Value, maxFreeTextLength);
+                    SanitizeNode(kvp.Value, maxFreeTextLength, parentIsSensitive: false);
                 }
             }
 
@@ -98,9 +110,18 @@ public static class AuditDetailsSanitizer
             for (var i = 0; i < arr.Count; i++)
             {
                 var item = arr[i];
-                if (item != null)
+                if (item == null)
                 {
-                    SanitizeNode(item, maxFreeTextLength);
+                    continue;
+                }
+
+                if (parentIsSensitive && item is JsonValue)
+                {
+                    arr[i] = SensitiveDataRedactor.Mask;
+                }
+                else
+                {
+                    SanitizeNode(item, maxFreeTextLength, parentIsSensitive: false);
                 }
             }
         }

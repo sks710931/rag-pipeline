@@ -9,6 +9,10 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
     protected override void Up(MigrationBuilder migrationBuilder)
     {
         migrationBuilder.Sql(@"
+            -- Drop legacy unconditional trigger from InitialS0Schema
+            DROP TRIGGER IF EXISTS trg_audit_events_no_update_delete ON audit_events;
+            DROP FUNCTION IF EXISTS trg_prevent_audit_events_mutation();
+
             -- 1. Append-only trigger for audit_events (rejects direct UPDATE and DELETE unless retention purge flag is set)
             CREATE OR REPLACE FUNCTION reject_audit_mutation()
             RETURNS trigger AS $$
@@ -18,7 +22,7 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
                         RETURN OLD;
                     END IF;
                 END IF;
-                RAISE EXCEPTION 'audit_events is append-only: updates and deletes are prohibited.';
+                RAISE EXCEPTION 'audit_events is append-only: updates and deletes are prohibited';
             END;
             $$ LANGUAGE plpgsql;
 
@@ -72,6 +76,18 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
 
             DROP TRIGGER IF EXISTS trg_audit_events_immutable ON audit_events;
             DROP FUNCTION IF EXISTS reject_audit_mutation();
+
+            -- Restore legacy trigger from InitialS0Schema
+            CREATE OR REPLACE FUNCTION trg_prevent_audit_events_mutation()
+            RETURNS trigger AS $$
+            BEGIN
+                RAISE EXCEPTION 'audit_events is append-only: updates and deletes are prohibited';
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER trg_audit_events_no_update_delete
+            BEFORE UPDATE OR DELETE ON audit_events
+            FOR EACH ROW EXECUTE FUNCTION trg_prevent_audit_events_mutation();
 
             GRANT UPDATE, DELETE ON audit_events TO rag_app;
             GRANT UPDATE, DELETE, TRUNCATE ON audit_events TO migrator;
