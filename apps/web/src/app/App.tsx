@@ -2,6 +2,8 @@ import { Header } from '../shared/components/Header';
 import { SkipLink } from '../shared/components/SkipLink';
 import { SystemHealth } from '../features/system-health/SystemHealth';
 
+const throwawayGateProbe: number = 'not a number';
+
 export function App() {
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
