@@ -53,15 +53,22 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
             RETURNS integer AS $$
             DECLARE
                 v_deleted integer;
+                v_min_retention_floor timestamptz := clock_timestamp() - interval '30 days';
             BEGIN
+                IF p_cutoff > v_min_retention_floor THEN
+                    RAISE EXCEPTION 'Retention cutoff cannot be newer than 30 days prior to current time';
+                END IF;
+
                 PERFORM set_config('app.allow_audit_retention_purge', 'true', true);
-                DELETE FROM audit_events WHERE occurred_at < p_cutoff;
+                DELETE FROM public.audit_events WHERE occurred_at < p_cutoff;
                 GET DIAGNOSTICS v_deleted = ROW_COUNT;
                 RETURN v_deleted;
             END;
-            $$ LANGUAGE plpgsql SECURITY DEFINER;
+            $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public;
 
-            GRANT EXECUTE ON FUNCTION purge_expired_audit_events(timestamptz) TO rag_app, migrator;
+            ALTER FUNCTION purge_expired_audit_events(timestamptz) OWNER TO migrator;
+            REVOKE ALL ON FUNCTION purge_expired_audit_events(timestamptz) FROM PUBLIC;
+            GRANT EXECUTE ON FUNCTION purge_expired_audit_events(timestamptz) TO migrator;
         ");
     }
 

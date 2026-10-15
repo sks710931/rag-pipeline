@@ -16,13 +16,16 @@ public class EfAuditEventStore : IAuditEventStore, IAuditRetentionService
 {
     private readonly RagPipelineDbContext _dbContext;
     private readonly ITenantTransactionCoordinator _coordinator;
+    private readonly string? _maintenanceConnectionString;
 
     public EfAuditEventStore(
         RagPipelineDbContext dbContext,
-        ITenantTransactionCoordinator coordinator)
+        ITenantTransactionCoordinator coordinator,
+        string? maintenanceConnectionString = null)
     {
         _dbContext = dbContext ?? throw new ArgumentNullException(nameof(dbContext));
         _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
+        _maintenanceConnectionString = maintenanceConnectionString;
     }
 
     public async Task AppendAsync(DomainAuditEvent auditEvent, CancellationToken cancellationToken = default)
@@ -123,59 +126,48 @@ public class EfAuditEventStore : IAuditEventStore, IAuditRetentionService
 
     public async Task<int> PurgeExpiredEventsAsync(TimeSpan retentionPeriod, CancellationToken cancellationToken = default)
     {
-        if (retentionPeriod <= TimeSpan.Zero)
+        if (retentionPeriod < TimeSpan.FromDays(30))
         {
-            throw new ArgumentException("Retention period must be greater than zero.", nameof(retentionPeriod));
+            throw new ArgumentException("Retention period must be at least 30 days to satisfy the retention floor.", nameof(retentionPeriod));
         }
 
         var cutoff = DateTimeOffset.UtcNow.Subtract(retentionPeriod);
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
-        try
+        var connectionString = !string.IsNullOrWhiteSpace(_maintenanceConnectionString)
+            ? _maintenanceConnectionString
+            : _dbContext.Database.GetDbConnection().ConnectionString;
+
+        int deletedCount;
+        await using (var maintenanceConn = new Npgsql.NpgsqlConnection(connectionString))
         {
-            var connection = _dbContext.Database.GetDbConnection();
-            if (connection.State != System.Data.ConnectionState.Open)
-            {
-                await _dbContext.Database.OpenConnectionAsync(cancellationToken);
-            }
-
-            int deletedCount;
-            await using (var cmd = connection.CreateCommand())
-            {
-                cmd.Transaction = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
-                cmd.CommandText = "SELECT purge_expired_audit_events(@cutoff);";
-                var param = cmd.CreateParameter();
-                param.ParameterName = "@cutoff";
-                param.Value = cutoff;
-                cmd.Parameters.Add(param);
-                var result = await cmd.ExecuteScalarAsync(cancellationToken);
-                deletedCount = Convert.ToInt32(result);
-            }
-
-            // The purge itself is audited
-            var purgeEvent = new EntityAuditEvent
-            {
-                Id = Guid.NewGuid(),
-                OccurredAt = DateTimeOffset.UtcNow,
-                ActorType = "System",
-                Action = "Audit.Retention.Purged",
-                TargetResource = "AuditEvent",
-                Outcome = "Success",
-                CorrelationId = Guid.NewGuid().ToString("N"),
-                DetailsJson = $"{{\"deletedCount\":{deletedCount},\"cutoff\":\"{cutoff:O}\"}}"
-            };
-
-            _dbContext.AuditEvents.Add(purgeEvent);
-            await _dbContext.SaveChangesAsync(cancellationToken);
-
-            await transaction.CommitAsync(cancellationToken);
-            return deletedCount;
+            await maintenanceConn.OpenAsync(cancellationToken);
+            await using var cmd = maintenanceConn.CreateCommand();
+            cmd.CommandText = "SELECT purge_expired_audit_events(@cutoff);";
+            var param = cmd.CreateParameter();
+            param.ParameterName = "@cutoff";
+            param.Value = cutoff;
+            cmd.Parameters.Add(param);
+            var result = await cmd.ExecuteScalarAsync(cancellationToken);
+            deletedCount = Convert.ToInt32(result);
         }
-        catch
+
+        // The purge itself is audited
+        var purgeEvent = new EntityAuditEvent
         {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
+            Id = Guid.NewGuid(),
+            OccurredAt = DateTimeOffset.UtcNow,
+            ActorType = "System",
+            Action = "Audit.Retention.Purged",
+            TargetResource = "AuditEvent",
+            Outcome = "Success",
+            CorrelationId = Guid.NewGuid().ToString("N"),
+            DetailsJson = $"{{\"deletedCount\":{deletedCount},\"cutoff\":\"{cutoff:O}\"}}"
+        };
+
+        _dbContext.AuditEvents.Add(purgeEvent);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return deletedCount;
     }
 
     private static DomainAuditEvent MapToDomain(EntityAuditEvent entity)

@@ -322,6 +322,45 @@ public class AuditPersistenceTests
     }
 
     [Fact]
+    public async Task Retention_RuntimeRole_IsDeniedExecuteOnPurgeFunction()
+    {
+        if (!_fixture.DockerAvailable) return;
+
+        await using var conn = new NpgsqlConnection(_fixture.RuntimeConnectionString);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT purge_expired_audit_events(now() - interval '40 days');";
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteScalarAsync());
+        Assert.Equal("42501", ex.SqlState);
+        Assert.Contains("permission denied for function purge_expired_audit_events", ex.Message);
+    }
+
+    [Fact]
+    public async Task Retention_PurgeCutoff_InsideRetentionFloor_IsRejected()
+    {
+        if (!_fixture.DockerAvailable) return;
+
+        // 1. Direct SQL attempt as migrator inside the 30-day floor
+        await using var conn = new NpgsqlConnection(_fixture.MigratorConnectionString);
+        await conn.OpenAsync();
+
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT purge_expired_audit_events(now() - interval '5 days');";
+
+        var ex = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteScalarAsync());
+        Assert.Contains("Retention cutoff cannot be newer than 30 days prior to current time", ex.Message);
+
+        // 2. C# validation in EfAuditEventStore
+        await using var runtimeContext = _fixture.CreateRuntimeDbContext();
+        var coordinator = new EfTenantTransactionCoordinator(runtimeContext);
+        var store = new EfAuditEventStore(runtimeContext, coordinator, _fixture.MigratorConnectionString);
+
+        await Assert.ThrowsAsync<ArgumentException>(() => store.PurgeExpiredEventsAsync(TimeSpan.FromDays(10)));
+    }
+
+    [Fact]
     public async Task Retention_PurgeJob_OnlyDeletesPastRetention_AndIsItselfAudited()
     {
         if (!_fixture.DockerAvailable) return;
@@ -353,11 +392,11 @@ public class AuditPersistenceTests
             await superContext.SaveChangesAsync();
         }
 
-        // Run purge via EfAuditEventStore
+        // Run purge via EfAuditEventStore using maintenance connection (MigratorConnectionString)
         await using (var runtimeContext = _fixture.CreateRuntimeDbContext())
         {
             var coordinator = new EfTenantTransactionCoordinator(runtimeContext);
-            var store = new EfAuditEventStore(runtimeContext, coordinator);
+            var store = new EfAuditEventStore(runtimeContext, coordinator, _fixture.MigratorConnectionString);
 
             var deleted = await store.PurgeExpiredEventsAsync(TimeSpan.FromDays(30));
             Assert.True(deleted >= 1);
