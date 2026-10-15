@@ -32,10 +32,9 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
                 FOR EACH ROW
                 EXECUTE FUNCTION reject_audit_mutation();
 
-            -- 2. Revoke direct UPDATE, DELETE, TRUNCATE on audit_events from runtime role, and UPDATE, TRUNCATE from migrator
+            -- 2. Revoke direct UPDATE, DELETE, TRUNCATE on audit_events from runtime and migrator roles
             REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM rag_app;
-            REVOKE UPDATE, TRUNCATE ON audit_events FROM migrator;
-            GRANT DELETE ON audit_events TO migrator;
+            REVOKE UPDATE, DELETE, TRUNCATE ON audit_events FROM migrator;
 
             -- 3. Row Level Security on audit_events
             ALTER TABLE audit_events ENABLE ROW LEVEL SECURITY;
@@ -43,7 +42,10 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
 
             DROP POLICY IF EXISTS audit_events_tenant_isolation_policy ON audit_events;
             CREATE POLICY audit_events_tenant_isolation_policy ON audit_events
-                USING (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+                USING (
+                    (current_setting('app.allow_audit_retention_purge', true) = 'true')
+                    OR (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
+                )
                 WITH CHECK (
                     (tenant_id = NULLIF(current_setting('app.current_tenant_id', true), '')::uuid)
                     OR (tenant_id IS NULL AND NULLIF(current_setting('app.current_tenant_id', true), '') IS NULL)
@@ -67,7 +69,6 @@ public partial class EnableAuditAppendOnlyAndRls : Migration
             END;
             $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public;
 
-            ALTER FUNCTION purge_expired_audit_events(timestamptz) OWNER TO migrator;
             REVOKE ALL ON FUNCTION purge_expired_audit_events(timestamptz) FROM PUBLIC;
             GRANT EXECUTE ON FUNCTION purge_expired_audit_events(timestamptz) TO migrator;
         ");
