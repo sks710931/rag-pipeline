@@ -20,6 +20,7 @@
     <ProjectReference Include="..\..\..\src\IdentityAccess\RagPipeline.IdentityAccess\RagPipeline.IdentityAccess.csproj" />
     <ProjectReference Include="..\..\..\src\TenantManagement\RagPipeline.TenantManagement\RagPipeline.TenantManagement.csproj" />
     <ProjectReference Include="..\..\..\src\DeploymentCapabilities\RagPipeline.DeploymentCapabilities\RagPipeline.DeploymentCapabilities.csproj" />
+    <ProjectReference Include="..\..\..\src\Persistence\RagPipeline.Persistence\RagPipeline.Persistence.csproj" />
     <ProjectReference Include="..\..\..\apps\api\RagPipeline.Api\RagPipeline.Api.csproj" />
   </ItemGroup>
 

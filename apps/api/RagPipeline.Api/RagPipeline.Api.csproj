@@ -5,6 +5,7 @@
     <ProjectReference Include="..\..\..\src\IdentityAccess\RagPipeline.IdentityAccess\RagPipeline.IdentityAccess.csproj" />
     <ProjectReference Include="..\..\..\src\TenantManagement\RagPipeline.TenantManagement\RagPipeline.TenantManagement.csproj" />
     <ProjectReference Include="..\..\..\src\DeploymentCapabilities\RagPipeline.DeploymentCapabilities\RagPipeline.DeploymentCapabilities.csproj" />
+    <ProjectReference Include="..\..\..\src\Persistence\RagPipeline.Persistence\RagPipeline.Persistence.csproj" />
   </ItemGroup>
 
   <ItemGroup>

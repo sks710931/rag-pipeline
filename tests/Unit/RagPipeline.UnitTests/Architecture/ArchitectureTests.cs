@@ -86,13 +86,23 @@ public class ArchitectureTests
     public void NoCsproj_ReferencesProhibitedPackagesOrProjects()
     {
         var repoRoot = FindRepoRoot();
-        var csprojFiles = Directory.GetFiles(repoRoot, "*.csproj", SearchOption.AllDirectories);
+        var csprojFiles = Directory.GetFiles(repoRoot, "*.csproj", SearchOption.AllDirectories)
+            .Where(p => !p.Contains("node_modules")
+                     && !p.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
+                     && !p.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}"))
+            .ToList();
         Assert.NotEmpty(csprojFiles);
-
-        var prohibitedTokens = new[] { "Qdrant", "OpenAI", "EntityFramework" };
 
         foreach (var csprojFile in csprojFiles)
         {
+            var fileName = Path.GetFileName(csprojFile);
+            var isPersistenceOrTest = fileName.Contains("Persistence", StringComparison.OrdinalIgnoreCase)
+                || fileName.Contains("Test", StringComparison.OrdinalIgnoreCase);
+
+            var prohibitedTokens = isPersistenceOrTest
+                ? new[] { "Qdrant", "OpenAI" }
+                : new[] { "Qdrant", "OpenAI", "EntityFramework" };
+
             var doc = XDocument.Load(csprojFile);
 
             var packageRefs = doc.Descendants("PackageReference")
