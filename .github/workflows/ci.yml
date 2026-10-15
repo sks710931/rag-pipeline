@@ -121,17 +121,18 @@ jobs:
 
       - name: Build container image
         run: |
-          COMMIT_SHA="${{ github.sha }}"
+          IMAGE_TAG="ragpipeline-api:sha-${GITHUB_SHA:0:12}"
+          echo "IMAGE_TAG=$IMAGE_TAG" >> $GITHUB_ENV
           docker build \
             -f apps/api/Dockerfile \
             --label "org.opencontainers.image.revision=${{ github.sha }}" \
-            -t "ragpipeline-api:sha-${COMMIT_SHA:0:12}" .
+            -t "$IMAGE_TAG" .
 
       - name: Smoke test container
         run: |
           set -euo pipefail
 
-          docker run -d --name ragpipeline-smoke -p 8080:8080 -e ASPNETCORE_ENVIRONMENT=Production -e 'ConnectionStrings__Database=Host=localhost;Database=smoke;Username=smoke' ragpipeline-api:ci
+          docker run -d --name ragpipeline-smoke -p 8080:8080 -e ASPNETCORE_ENVIRONMENT=Production -e 'ConnectionStrings__Database=Host=localhost;Database=smoke;Username=smoke' $IMAGE_TAG
 
           ready=0
           for i in $(seq 1 30); do
