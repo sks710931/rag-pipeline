@@ -120,7 +120,12 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build container image
-        run: docker build -f apps/api/Dockerfile -t ragpipeline-api:ci .
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          docker build \
+            -f apps/api/Dockerfile \
+            --label "org.opencontainers.image.revision=${{ github.sha }}" \
+            -t "ragpipeline-api:sha-${COMMIT_SHA:0:12}" .
 
   web:
     runs-on: ubuntu-latest
@@ -142,6 +147,10 @@ jobs:
         working-directory: apps/web
         run: pnpm install --frozen-lockfile
 
+      - name: Format check
+        working-directory: apps/web
+        run: pnpm format:check
+
       - name: Lint
         working-directory: apps/web
         run: pnpm lint
@@ -161,4 +170,12 @@ jobs:
       - name: Audit dependencies
         working-directory: apps/web
         run: pnpm audit --audit-level=high --prod
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: failure()
+        with:
+          name: web-logs
+          path: apps/web/dist
+          if-no-files-found: ignore
+
 

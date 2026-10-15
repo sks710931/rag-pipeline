@@ -198,3 +198,55 @@ Configuration validation failed for 'DatabaseOptions':
 - **Reference Invariant**: Feature modules may reference only `RagPipeline.BuildingBlocks` and runtime libraries; modules must never directly reference each other.
 - **Single Persistence Boundary**: Persistence is managed centrally; independent, per-feature `DbContext`s are not permitted.
 - **Frontend SPA Boundary**: The React SPA in `apps/web` interacts with the backend strictly via the BFF HTTP API (`/api/*`).
+
+---
+
+## Continuous Integration
+
+The repository enforces automated validation on pull requests and pushes to `main` via GitHub Actions (`.github/workflows/ci.yml`).
+
+### CI Jobs & Local Equivalents
+
+| CI Job | Local Equivalent Command |
+|---|---|
+| `build-test` | `dotnet restore --locked-mode && dotnet build --no-restore -c Release -warnaserror && dotnet test --no-build -c Release --logger trx --results-directory TestResults` |
+| `format` | `dotnet format --verify-no-changes --no-restore` |
+| `secret-scan` | `gitleaks git --redact --no-banner .` |
+| `dependency-advisories` | `dotnet list package --vulnerable --include-transitive` |
+| `container-build` | `docker build -f apps/api/Dockerfile -t ragpipeline-api:sha-$(git rev-parse --short=12 HEAD) --label org.opencontainers.image.revision=$(git rev-parse HEAD) .` |
+| `web` | `cd apps/web && pnpm install --frozen-lockfile && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test && pnpm build && pnpm audit --audit-level=high --prod` |
+
+### Container Tag Convention
+
+In the `container-build` job, the API container image is built without pushing to a registry or performing registry login. The image is tagged following the commit SHA convention:
+- **Image tag:** `ragpipeline-api:sha-<first 12 chars of github.sha>` (e.g. `ragpipeline-api:sha-${GITHUB_SHA:0:12}` or locally `ragpipeline-api:sha-$(git rev-parse --short=12 HEAD)`)
+- **OCI label:** `org.opencontainers.image.revision=${{ github.sha }}` (the full commit SHA)
+
+Local equivalent command:
+```bash
+docker build -f apps/api/Dockerfile \
+  -t "ragpipeline-api:sha-$(git rev-parse --short=12 HEAD)" \
+  --label "org.opencontainers.image.revision=$(git rev-parse HEAD)" .
+```
+
+### Downloading CI Artifacts
+
+CI produces two artifacts:
+- **`test-results`**: Test execution reports uploaded on every run (`if: always()`) from the `TestResults` directory.
+- **`web-logs`**: Frontend output (`apps/web/dist`) uploaded only when the `web` job fails (`if: failure()`, `if-no-files-found: ignore`).
+
+To download these artifacts:
+- **GitHub UI**: Navigate to the repository's **Actions** tab, click on the workflow run, scroll down to the **Artifacts** section at the bottom of the Summary page, and click `test-results` or `web-logs` to download the zip file.
+- **GitHub CLI (`gh`)**:
+  ```bash
+  # Download .NET test results
+  gh run download <run-id> -n test-results --dir ./TestResults
+
+  # Download web build/logs artifact (if the web job failed)
+  gh run download <run-id> -n web-logs --dir ./web-logs
+  ```
+
+### Release & Compliance Gaps
+
+SBOM generation, image signing and release certification are NOT implemented yet.
+
