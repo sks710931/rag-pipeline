@@ -172,6 +172,7 @@ The Docker Compose configuration enforces robust defense-in-depth security:
 - **Loopback Interface Binding**: All host ports bind explicitly to `127.0.0.1` (`127.0.0.1:${POSTGRES_HOST_PORT:-5432}:5432` and `127.0.0.1:${API_HOST_PORT:-8080}:8080`), preventing accidental exposure to public or internal networks.
 - **No Passwords in Environment**: Neither container exposes database passwords via `environment:` blocks. Passwords and connection strings are mounted strictly via Docker secrets.
 - **Persistent DataProtection Keys**: A dedicated named volume `app-keys` mounts at `/var/lib/ragpipeline/keys` owned by `app:app`, persisting encryption keys across container restarts.
+- **Database Role (Known Limitation)**: The api connects to Postgres as the superuser until S0-PR03 introduces separate database roles (migrator, rag_app, rag_probe).
 
 ---
 
