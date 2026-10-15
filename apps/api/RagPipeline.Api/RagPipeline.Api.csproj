@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\BuildingBlocks\RagPipeline.BuildingBlocks\RagPipeline.BuildingBlocks.csproj" />
+    <ProjectReference Include="..\..\..\src\IdentityAccess\RagPipeline.IdentityAccess\RagPipeline.IdentityAccess.csproj" />
+    <ProjectReference Include="..\..\..\src\TenantManagement\RagPipeline.TenantManagement\RagPipeline.TenantManagement.csproj" />
+    <ProjectReference Include="..\..\..\src\DeploymentCapabilities\RagPipeline.DeploymentCapabilities\RagPipeline.DeploymentCapabilities.csproj" />
+  </ItemGroup>
+
+</Project>

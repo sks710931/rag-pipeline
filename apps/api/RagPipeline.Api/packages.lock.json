@@ -1,0 +1,28 @@
+{
+  "version": 2,
+  "dependencies": {
+    "net10.0": {
+      "ragpipeline.buildingblocks": {
+        "type": "Project"
+      },
+      "ragpipeline.deploymentcapabilities": {
+        "type": "Project",
+        "dependencies": {
+          "RagPipeline.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "ragpipeline.identityaccess": {
+        "type": "Project",
+        "dependencies": {
+          "RagPipeline.BuildingBlocks": "[1.0.0, )"
+        }
+      },
+      "ragpipeline.tenantmanagement": {
+        "type": "Project",
+        "dependencies": {
+          "RagPipeline.BuildingBlocks": "[1.0.0, )"
+        }
+      }
+    }
+  }
+}
