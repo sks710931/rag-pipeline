@@ -9,11 +9,17 @@ using RagPipeline.BuildingBlocks.Configuration;
 using RagPipeline.BuildingBlocks.Http;
 using RagPipeline.BuildingBlocks.Observability;
 
+using RagPipeline.BuildingBlocks.Tenancy;
+
 public static class HostingBaselineExtensions
 {
     public static IServiceCollection AddHostingBaseline(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
+
+        services.AddScoped<ITenantContextAccessor, TenantContextAccessor>();
+        services.AddScoped<ITenantContextResolver, TenantContextResolver>();
+        services.AddScoped<TenantContextEndpointFilter>();
 
         services.AddLogging(builder =>
         {

@@ -5,6 +5,29 @@
     "version": "v1"
   },
   "paths": {
+    "/api/v1/tenants/{tenantId}/profile": {
+      "get": {
+        "tags": [
+          "RagPipeline.Api"
+        ],
+        "parameters": [
+          {
+            "name": "tenantId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
     "/api/v1/system/health/live": {
       "get": {
         "tags": [
@@ -156,6 +179,9 @@
     }
   },
   "tags": [
+    {
+      "name": "RagPipeline.Api"
+    },
     {
       "name": "Health"
     }
