@@ -23,7 +23,7 @@ public static class SensitiveDataRedactor
 
     // Matches JSON-style "password":"x" string values for sensitive keys
     private static readonly Regex JsonStringPattern = new(
-        @"(?i)(?<prefix>""(?<key>password|pwd|secret|key|token|connection[-_]?string|proof|cookie|authorization|apikey|api[-_]?key|bearer|session|access[-_]?token|refresh[-_]?token)""\s*:\s*)""[^""\r\n]*""",
+        @"(?i)(?<prefix>""(?<key>password|pwd|secret|key|token|connection[-_]?string|proof|cookie|authorization|apikey|api[-_]?key|bearer|session|access[-_]?token|refresh[-_]?token|mek|master[-_]?key|recovery[-_]?phrase|recovery[-_]?key|passphrase|credential)""\s*:\s*)""[^""\r\n]*""",
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
         RegexTimeout);
 
@@ -40,9 +40,9 @@ public static class SensitiveDataRedactor
         RegexTimeout);
 
     // Matches key=value pairs for sensitive keys:
-    // password|pwd|secret|key|token|connectionstring|proof|cookie|authorization|apikey|bearer|session
+    // password|pwd|secret|key|token|connectionstring|proof|cookie|authorization|apikey|bearer|session|mek|master-key|recovery-phrase
     private static readonly Regex KeyValuePattern = new(
-        @"(?i)(?<prefix>(?:^|[;\s,;&?])(?<key>password|pwd|secret|key|token|connection[-_]?string|proof|cookie|authorization|apikey|api[-_]?key|bearer|session|access[-_]?token|refresh[-_]?token)\s*=\s*)(?<val>""[^""]*""|'[^']*'|[^;\r\n\s,;&]+)",
+        @"(?i)(?<prefix>(?:^|[;\s,;&?])(?<key>password|pwd|secret|key|token|connection[-_]?string|proof|cookie|authorization|apikey|api[-_]?key|bearer|session|access[-_]?token|refresh[-_]?token|mek|master[-_]?key|recovery[-_]?phrase|recovery[-_]?key|passphrase|credential)\s*=\s*)(?<val>""[^""]*""|'[^']*'|[^;\r\n\s,;&]+)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant,
         RegexTimeout);
 

@@ -21,6 +21,13 @@ public static class ServiceCollectionExtensions
             ?? configuration[DatabaseOptions.ConfigurationKey]
             ?? Environment.GetEnvironmentVariable("RAGPIPELINE_RUNTIME_CONNECTION");
 
+        var maintenanceConnectionString = configuration.GetConnectionString("Maintenance")
+            ?? configuration.GetConnectionString("Migrator")
+            ?? configuration["ConnectionStrings:Maintenance"]
+            ?? configuration["ConnectionStrings:Migrator"]
+            ?? Environment.GetEnvironmentVariable("RAGPIPELINE_MAINTENANCE_CONNECTION")
+            ?? Environment.GetEnvironmentVariable("RAGPIPELINE_MIGRATOR_CONNECTION");
+
         services.AddSingleton<TenantSecurityCommandInterceptor>();
         services.AddSingleton<PooledConnectionResetInterceptor>();
 
@@ -42,6 +49,14 @@ public static class ServiceCollectionExtensions
             services.AddScoped<ITenantMembershipLookup, EfTenantMembershipLookup>();
             services.AddScoped<ITenantProfileStore, EfTenantProfileStore>();
             services.AddScoped<ITenantTransactionCoordinator, EfTenantTransactionCoordinator>();
+            services.AddScoped<RagPipeline.BuildingBlocks.Audit.IAuditEventStore>(sp =>
+                new RagPipeline.Persistence.Audit.EfAuditEventStore(
+                    sp.GetRequiredService<RagPipelineDbContext>(),
+                    sp.GetRequiredService<ITenantTransactionCoordinator>(),
+                    maintenanceConnectionString));
+            services.AddScoped<RagPipeline.BuildingBlocks.Audit.IAuditRetentionService>(sp =>
+                (RagPipeline.Persistence.Audit.EfAuditEventStore)sp.GetRequiredService<RagPipeline.BuildingBlocks.Audit.IAuditEventStore>());
+            services.AddScoped<RagPipeline.BuildingBlocks.Session.ISessionRecordStore, RagPipeline.Persistence.Session.EfSessionRecordStore>();
         }
 
         return services;

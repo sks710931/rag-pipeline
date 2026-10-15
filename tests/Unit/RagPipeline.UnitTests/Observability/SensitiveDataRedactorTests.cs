@@ -35,6 +35,10 @@ public class SensitiveDataRedactorTests
     [InlineData("api-key")]
     [InlineData("connectionstring")]
     [InlineData("connection-string")]
+    [InlineData("mek")]
+    [InlineData("master-key")]
+    [InlineData("recovery-phrase")]
+    [InlineData("recovery-key")]
     public void Redact_WithConnectionStringKeys_NeverLeaksCanary(string key)
     {
         var canary = $"{CanaryPrefix}-conn-{key}-918273";
@@ -148,6 +152,10 @@ public class SensitiveDataRedactorTests
     [InlineData("connectionString")]
     [InlineData("accessToken")]
     [InlineData("refreshToken")]
+    [InlineData("mek")]
+    [InlineData("masterKey")]
+    [InlineData("recoveryPhrase")]
+    [InlineData("recoveryKey")]
     public void Redact_WithJsonSensitiveKeys_NeverLeaksCanary(string key)
     {
         var canary = $"{CanaryPrefix}-json-{key}-654321";
