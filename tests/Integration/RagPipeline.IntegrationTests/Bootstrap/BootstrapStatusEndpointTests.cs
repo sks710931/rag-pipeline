@@ -10,15 +10,18 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Npgsql;
 using RagPipeline.BuildingBlocks.Persistence;
 using RagPipeline.IntegrationTests.Persistence;
 using RagPipeline.Persistence;
+using RagPipeline.Persistence.Interceptors;
 using Xunit;
 
 [Collection("PostgresDatabase")]
@@ -36,14 +39,20 @@ public class BootstrapStatusEndpointTests : IClassFixture<WebApplicationFactory<
 
     private WebApplicationFactory<Program> CreateFactory(string? dbConnectionString = null, string? deploymentMode = null)
     {
+        var effectiveConnStr = !string.IsNullOrWhiteSpace(dbConnectionString)
+            ? dbConnectionString
+            : (!string.IsNullOrWhiteSpace(_fixture.RuntimeConnectionString)
+                ? _fixture.RuntimeConnectionString
+                : "Host=localhost;Database=ragpipeline;Username=rag_app;Password=test");
+
         return _factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, config) =>
             {
                 var dict = new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Database"] = dbConnectionString ?? _fixture.RuntimeConnectionString,
-                    ["ConnectionStrings:Maintenance"] = _fixture.MigratorConnectionString,
+                    ["ConnectionStrings:Database"] = effectiveConnStr,
+                    ["ConnectionStrings:Maintenance"] = !string.IsNullOrWhiteSpace(_fixture.MigratorConnectionString) ? _fixture.MigratorConnectionString : effectiveConnStr,
                     ["Hosting:ApplicationName"] = "RagPipeline.Api"
                 };
                 if (deploymentMode != null)
@@ -52,6 +61,35 @@ public class BootstrapStatusEndpointTests : IClassFixture<WebApplicationFactory<
                 }
 
                 config.AddInMemoryCollection(dict);
+            });
+
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<RagPipelineDbContext>>();
+                services.RemoveAll<RagPipelineDbContext>();
+                services.AddDbContext<RagPipelineDbContext>((sp, options) =>
+                {
+                    options.UseNpgsql(effectiveConnStr, npgsqlOptions =>
+                    {
+                        npgsqlOptions.MigrationsHistoryTable("__EFMigrationsHistory", "public");
+                    });
+                    options.AddInterceptors(
+                        sp.GetRequiredService<TenantSecurityCommandInterceptor>(),
+                        sp.GetRequiredService<PooledConnectionResetInterceptor>());
+                });
+
+                services.RemoveAll<IBootstrapStateReader>();
+                services.RemoveAll<IBootstrapStateService>();
+                services.AddScoped<IBootstrapStateReader, BootstrapStateReader>();
+                services.AddScoped<IBootstrapStateService, BootstrapStateService>();
+
+                if (deploymentMode != null)
+                {
+                    services.Configure<RagPipeline.BuildingBlocks.Configuration.HostingOptions>(options =>
+                    {
+                        options.DeploymentMode = deploymentMode;
+                    });
+                }
             });
         });
     }
@@ -195,6 +233,7 @@ public class BootstrapStatusEndpointTests : IClassFixture<WebApplicationFactory<
     public void NoRoute_CanResetState()
     {
         using var factory = CreateFactory();
+        using var client = factory.CreateClient();
         var endpointSources = factory.Services.GetServices<EndpointDataSource>();
         var endpoints = endpointSources.SelectMany(s => s.Endpoints).OfType<RouteEndpoint>().ToList();
 

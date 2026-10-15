@@ -54,6 +54,8 @@ public class PostgresFixture : IAsyncLifetime
                 GRANT ALL ON SCHEMA public TO migrator;
                 ALTER TABLE IF EXISTS ""__EFMigrationsHistory"" OWNER TO migrator;
                 GRANT ALL ON ""__EFMigrationsHistory"" TO migrator;
+                GRANT SELECT ON ""__EFMigrationsHistory"" TO rag_app;
+                GRANT SELECT ON ""__EFMigrationsHistory"" TO rag_probe;
             ";
             await cmd.ExecuteNonQueryAsync();
         }

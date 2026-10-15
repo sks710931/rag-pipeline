@@ -7,14 +7,19 @@ using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using Npgsql;
 using RagPipeline.BuildingBlocks.Configuration;
+using RagPipeline.BuildingBlocks.Persistence;
 using RagPipeline.IntegrationTests.Persistence;
 using RagPipeline.Persistence;
 using RagPipeline.Persistence.Entities;
+using RagPipeline.Persistence.Interceptors;
 using Xunit;
 
 [Collection("PostgresDatabase")]
@@ -32,16 +37,41 @@ public class BootstrapSealedPersistenceTests : IClassFixture<WebApplicationFacto
 
     private WebApplicationFactory<Program> CreateFactory()
     {
+        var effectiveConnStr = !string.IsNullOrWhiteSpace(_fixture.RuntimeConnectionString)
+            ? _fixture.RuntimeConnectionString
+            : "Host=localhost;Database=ragpipeline;Username=rag_app;Password=test";
+
         return _factory.WithWebHostBuilder(builder =>
         {
             builder.ConfigureAppConfiguration((_, config) =>
             {
                 config.AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["ConnectionStrings:Database"] = _fixture.RuntimeConnectionString,
-                    ["ConnectionStrings:Maintenance"] = _fixture.MigratorConnectionString,
+                    ["ConnectionStrings:Database"] = effectiveConnStr,
+                    ["ConnectionStrings:Maintenance"] = !string.IsNullOrWhiteSpace(_fixture.MigratorConnectionString) ? _fixture.MigratorConnectionString : effectiveConnStr,
                     ["Hosting:ApplicationName"] = "RagPipeline.Api"
                 });
+            });
+
+            builder.ConfigureTestServices(services =>
+            {
+                services.RemoveAll<DbContextOptions<RagPipelineDbContext>>();
+                services.RemoveAll<RagPipelineDbContext>();
+                services.AddDbContext<RagPipelineDbContext>((sp, options) =>
+                {
+                    options.UseNpgsql(effectiveConnStr, npgsqlOptions =>
+                    {
+                        npgsqlOptions.MigrationsHistoryTable("__EFMigrationsHistory", "public");
+                    });
+                    options.AddInterceptors(
+                        sp.GetRequiredService<TenantSecurityCommandInterceptor>(),
+                        sp.GetRequiredService<PooledConnectionResetInterceptor>());
+                });
+
+                services.RemoveAll<IBootstrapStateReader>();
+                services.RemoveAll<IBootstrapStateService>();
+                services.AddScoped<IBootstrapStateReader, BootstrapStateReader>();
+                services.AddScoped<IBootstrapStateService, BootstrapStateService>();
             });
         });
     }
