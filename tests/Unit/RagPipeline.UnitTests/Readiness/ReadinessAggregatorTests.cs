@@ -184,6 +184,12 @@ public class ReadinessAggregatorTests
             ReadinessAggregator.AggregateAsync(checks, configuration: null, cts.Token));
     }
 
+    [Fact]
+    public void Throwaway_DeliberateFailure_ProvesBuildTestGateFails()
+    {
+        Assert.Equal(1, 2);
+    }
+
     private sealed class TestCheck(string name, ReadinessStatus status) : IReadinessCheck
     {
         public string Name => name;
