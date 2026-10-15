@@ -10,11 +10,11 @@ public static class AuthorizationExtensions
     {
         services.AddAuthentication(options =>
         {
-            options.DefaultAuthenticateScheme = DefaultAuthenticationHandler.SchemeName;
-            options.DefaultChallengeScheme = DefaultAuthenticationHandler.SchemeName;
-            options.DefaultForbidScheme = DefaultAuthenticationHandler.SchemeName;
+            options.DefaultAuthenticateScheme = FailClosedAuthenticationHandler.SchemeName;
+            options.DefaultChallengeScheme = FailClosedAuthenticationHandler.SchemeName;
+            options.DefaultForbidScheme = FailClosedAuthenticationHandler.SchemeName;
         })
-        .AddScheme<AuthenticationSchemeOptions, DefaultAuthenticationHandler>(DefaultAuthenticationHandler.SchemeName, _ => { });
+        .AddScheme<AuthenticationSchemeOptions, FailClosedAuthenticationHandler>(FailClosedAuthenticationHandler.SchemeName, _ => { });
 
         services.AddAuthorization(options =>
         {

@@ -131,9 +131,13 @@ public class TenantRouteTests : IClassFixture<WebApplicationFactory<Program>>
             {
                 services.AddSingleton<ILoggerProvider>(new TestLoggerProvider(logSink));
                 services.AddScoped<ITenantMembershipLookup>(_ => testStore);
-                services.AddScoped<ITenantProfileStore>(_ => testStore);
-                services.AddAuthentication("Test")
-                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
+                services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = "Test";
+                    options.DefaultChallengeScheme = "Test";
+                    options.DefaultForbidScheme = "Test";
+                })
+                .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
             });
         });
 
@@ -161,8 +165,13 @@ public class TenantRouteTests : IClassFixture<WebApplicationFactory<Program>>
             {
                 services.AddScoped<ITenantMembershipLookup>(_ => testStore);
                 services.AddScoped<ITenantProfileStore>(_ => testStore);
-                services.AddAuthentication("Test")
-                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
+                services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = "Test";
+                    options.DefaultChallengeScheme = "Test";
+                    options.DefaultForbidScheme = "Test";
+                })
+                .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", _ => { });
             });
         });
 

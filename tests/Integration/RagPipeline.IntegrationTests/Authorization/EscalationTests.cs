@@ -8,6 +8,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RagPipeline.BuildingBlocks.Authorization;
@@ -100,11 +101,19 @@ public class EscalationTests : IClassFixture<WebApplicationFactory<Program>>
 
         using var client = _factory.WithWebHostBuilder(builder =>
         {
-            builder.ConfigureServices(services =>
+            builder.ConfigureTestServices(services =>
             {
                 services.AddScoped<IDeploymentOwnerLookup>(_ => store);
                 services.AddScoped<ITenantMembershipLookup>(_ => store);
                 services.AddScoped<ITenantProfileStore>(_ => store);
+
+                services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
+                    options.DefaultForbidScheme = TestAuthHandler.SchemeName;
+                })
+                .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
             });
         }).CreateClient();
 
@@ -123,6 +132,31 @@ public class EscalationTests : IClassFixture<WebApplicationFactory<Program>>
     }
 
     [Fact]
+    public async Task ProductionHost_WithoutTestAuthentication_RejectsBearerGuidAndTestHeaders()
+    {
+        // Proof that the production host configuration does not trust bare GUIDs or test headers:
+        // Uses the unmodified WebApplicationFactory (production pipeline) without TestAuthHandler
+        using var client = _factory.CreateClient();
+
+        // 1. Bearer <guid> against deployment admin returns 401
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Guid.NewGuid().ToString());
+        var res1 = await client.GetAsync("/api/v1/deployment/admin/status");
+        Assert.Equal(HttpStatusCode.Unauthorized, res1.StatusCode);
+
+        // 2. X-Test-UserId against deployment admin returns 401
+        client.DefaultRequestHeaders.Clear();
+        client.DefaultRequestHeaders.Add("X-Test-UserId", Guid.NewGuid().ToString());
+        var res2 = await client.GetAsync("/api/v1/deployment/admin/status");
+        Assert.Equal(HttpStatusCode.Unauthorized, res2.StatusCode);
+
+        // 3. Bearer <guid> against tenant settings returns 401
+        client.DefaultRequestHeaders.Clear();
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", Guid.NewGuid().ToString());
+        var res3 = await client.GetAsync($"/api/v1/tenants/{Guid.NewGuid()}/settings");
+        Assert.Equal(HttpStatusCode.Unauthorized, res3.StatusCode);
+    }
+
+    [Fact]
     public async Task AuthorizationFailure_IsAudited_NoSecrets()
     {
         const string canarySecret = "SuperCanarySecretPassphrase987!#";
@@ -131,12 +165,20 @@ public class EscalationTests : IClassFixture<WebApplicationFactory<Program>>
         var store = SyntheticUsers.CreatePopulatedStore();
         using var customFactory = _factory.WithWebHostBuilder(builder =>
         {
-            builder.ConfigureServices(services =>
+            builder.ConfigureTestServices(services =>
             {
                 services.AddSingleton<ILoggerProvider>(new TestLoggerProvider(logSink));
                 services.AddScoped<IDeploymentOwnerLookup>(_ => store);
                 services.AddScoped<ITenantMembershipLookup>(_ => store);
                 services.AddScoped<ITenantProfileStore>(_ => store);
+
+                services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
+                    options.DefaultForbidScheme = TestAuthHandler.SchemeName;
+                })
+                .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
             });
         });
 

@@ -14,7 +14,6 @@ using RagPipeline.BuildingBlocks.Readiness;
 
 public sealed record DeploymentAdminStatusResponse(string Status, DateTimeOffset Timestamp);
 public sealed record DeploymentKeyRootResponse(string Status, string KeyRingVersion);
-public sealed record DeploymentBootstrapSealResponse(bool Sealed, DateTimeOffset SealedAt);
 
 public sealed class DeploymentCapabilitiesModule : IModule
 {
@@ -70,15 +69,6 @@ public sealed class DeploymentCapabilitiesModule : IModule
             .WithTags("DeploymentAdmin")
             .WithSummary("Get deployment root key status")
             .Produces<DeploymentKeyRootResponse>(StatusCodes.Status200OK, "application/json")
-            .ProducesProblem(StatusCodes.Status401Unauthorized, "application/problem+json")
-            .ProducesProblem(StatusCodes.Status403Forbidden, "application/problem+json")
-            .RequireAuthorization(Policies.KeyRootAndBootstrapAdmin);
-
-        adminGroup.MapPost("/bootstrap/seal", () => Results.Ok(new DeploymentBootstrapSealResponse(true, DateTimeOffset.UtcNow)))
-            .WithName("SealDeploymentBootstrap")
-            .WithTags("DeploymentAdmin")
-            .WithSummary("Seal deployment bootstrap")
-            .Produces<DeploymentBootstrapSealResponse>(StatusCodes.Status200OK, "application/json")
             .ProducesProblem(StatusCodes.Status401Unauthorized, "application/problem+json")
             .ProducesProblem(StatusCodes.Status403Forbidden, "application/problem+json")
             .RequireAuthorization(Policies.KeyRootAndBootstrapAdmin);

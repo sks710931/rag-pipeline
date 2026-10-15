@@ -2,13 +2,20 @@ namespace RagPipeline.IntegrationTests.Authorization;
 
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Headers;
-using System.Text.Json;
+using System.Security.Claims;
+using System.Text.Encodings.Web;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using RagPipeline.BuildingBlocks.Authorization;
 using RagPipeline.BuildingBlocks.Tenancy;
 
@@ -70,11 +77,19 @@ public static class SyntheticUsers
     {
         var customFactory = factory.WithWebHostBuilder(builder =>
         {
-            builder.ConfigureServices(services =>
+            builder.ConfigureTestServices(services =>
             {
                 services.AddScoped<IDeploymentOwnerLookup>(_ => store);
                 services.AddScoped<ITenantMembershipLookup>(_ => store);
                 services.AddScoped<ITenantProfileStore>(_ => store);
+
+                services.AddAuthentication(options =>
+                {
+                    options.DefaultAuthenticateScheme = TestAuthHandler.SchemeName;
+                    options.DefaultChallengeScheme = TestAuthHandler.SchemeName;
+                    options.DefaultForbidScheme = TestAuthHandler.SchemeName;
+                })
+                .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
             });
         });
 
@@ -88,6 +103,78 @@ public static class SyntheticUsers
         }
 
         return client;
+    }
+}
+
+public sealed class TestAuthHandler : AuthenticationHandler<AuthenticationSchemeOptions>
+{
+    public const string SchemeName = "TestAuth";
+
+    public TestAuthHandler(
+        IOptionsMonitor<AuthenticationSchemeOptions> options,
+        ILoggerFactory logger,
+        UrlEncoder encoder)
+        : base(options, logger, encoder)
+    {
+    }
+
+    protected override Task<AuthenticateResult> HandleAuthenticateAsync()
+    {
+        if (Request.Headers.TryGetValue("X-Test-Anonymous", out var isAnon) &&
+            string.Equals(isAnon, "true", StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult(AuthenticateResult.NoResult());
+        }
+
+        Guid userId = Guid.Empty;
+
+        var authHeader = Request.Headers.Authorization.ToString();
+        if (!string.IsNullOrWhiteSpace(authHeader))
+        {
+            var parts = authHeader.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            if (parts.Length == 2 &&
+                (string.Equals(parts[0], "Bearer", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(parts[0], "Test", StringComparison.OrdinalIgnoreCase)))
+            {
+                _ = Guid.TryParse(parts[1], out userId);
+            }
+        }
+
+        if (userId == Guid.Empty &&
+            Request.Headers.TryGetValue("X-Test-UserId", out var headerUserId) &&
+            Guid.TryParse(headerUserId, out var parsedHeaderId))
+        {
+            userId = parsedHeaderId;
+        }
+
+        if (userId == Guid.Empty)
+        {
+            return Task.FromResult(AuthenticateResult.NoResult());
+        }
+
+        var claims = new List<Claim>
+        {
+            new(ClaimTypes.NameIdentifier, userId.ToString()),
+            new(ClaimTypes.Name, $"user-{userId:N}")
+        };
+
+        var identity = new ClaimsIdentity(claims, SchemeName);
+        var principal = new ClaimsPrincipal(identity);
+        var ticket = new AuthenticationTicket(principal, SchemeName);
+
+        return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return Task.CompletedTask;
+    }
+
+    protected override Task HandleForbiddenAsync(AuthenticationProperties properties)
+    {
+        Response.StatusCode = StatusCodes.Status403Forbidden;
+        return Task.CompletedTask;
     }
 }
 

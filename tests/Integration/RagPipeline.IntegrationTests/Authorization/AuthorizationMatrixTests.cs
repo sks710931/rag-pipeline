@@ -82,28 +82,16 @@ public class AuthorizationMatrixTests : IClassFixture<WebApplicationFactory<Prog
     }
 
     [Theory]
-    [InlineData(SyntheticUsers.SuperadminOnly, "/api/v1/deployment/admin/keys/root", "GET", 200)]
-    [InlineData(SyntheticUsers.OwnerA, "/api/v1/deployment/admin/keys/root", "GET", 403)]
-    [InlineData(SyntheticUsers.Anonymous, "/api/v1/deployment/admin/keys/root", "GET", 401)]
-    [InlineData(SyntheticUsers.SuperadminOnly, "/api/v1/deployment/admin/bootstrap/seal", "POST", 200)]
-    [InlineData(SyntheticUsers.OwnerA, "/api/v1/deployment/admin/bootstrap/seal", "POST", 403)]
-    [InlineData(SyntheticUsers.Anonymous, "/api/v1/deployment/admin/bootstrap/seal", "POST", 401)]
-    public async Task Matrix_KeyRootAndBootstrapAdmin_DeniedToTenantOwner(string user, string endpoint, string method, int expectedStatusCode)
+    [InlineData(SyntheticUsers.SuperadminOnly, 200)]
+    [InlineData(SyntheticUsers.OwnerA, 403)]
+    [InlineData(SyntheticUsers.Anonymous, 401)]
+    public async Task Matrix_KeyRootAndBootstrapAdmin_DeniedToTenantOwner(string user, int expectedStatusCode)
     {
         // AC2: Key/root and bootstrap administration is denied to Tenant Owner
         var store = SyntheticUsers.CreatePopulatedStore();
         using var client = SyntheticUsers.CreateClientForUser(_factory, store, user);
 
-        HttpResponseMessage response;
-        if (method == "GET")
-        {
-            response = await client.GetAsync(endpoint);
-        }
-        else
-        {
-            response = await client.PostAsync(endpoint, new StringContent("{}", Encoding.UTF8, "application/json"));
-        }
-
+        var response = await client.GetAsync("/api/v1/deployment/admin/keys/root");
         Assert.Equal((HttpStatusCode)expectedStatusCode, response.StatusCode);
     }
 

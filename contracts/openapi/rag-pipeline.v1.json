@@ -352,47 +352,6 @@
           }
         }
       }
-    },
-    "/api/v1/deployment/admin/bootstrap/seal": {
-      "post": {
-        "tags": [
-          "DeploymentAdmin"
-        ],
-        "summary": "Seal deployment bootstrap",
-        "operationId": "SealDeploymentBootstrap",
-        "responses": {
-          "200": {
-            "description": "OK",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeploymentBootstrapSealResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/problem+json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
-                }
-              }
-            }
-          }
-        }
-      }
     }
   },
   "components": {
@@ -408,22 +367,6 @@
             "type": "string"
           },
           "timestamp": {
-            "type": "string",
-            "format": "date-time"
-          }
-        }
-      },
-      "DeploymentBootstrapSealResponse": {
-        "required": [
-          "sealed",
-          "sealedAt"
-        ],
-        "type": "object",
-        "properties": {
-          "sealed": {
-            "type": "boolean"
-          },
-          "sealedAt": {
             "type": "string",
             "format": "date-time"
           }
