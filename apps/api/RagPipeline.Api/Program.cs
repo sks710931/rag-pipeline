@@ -6,6 +6,7 @@ using RagPipeline.BuildingBlocks.Hosting;
 using RagPipeline.BuildingBlocks.Modules;
 using RagPipeline.DeploymentCapabilities;
 using RagPipeline.IdentityAccess;
+using RagPipeline.Persistence;
 using RagPipeline.TenantManagement;
 
 public partial class Program
@@ -35,6 +36,9 @@ public partial class Program
             builder.Services.AddModule<IdentityAccessModule>(builder.Configuration);
             builder.Services.AddModule<TenantManagementModule>(builder.Configuration);
             builder.Services.AddModule<DeploymentCapabilitiesModule>(builder.Configuration);
+
+            // Persistence registration
+            builder.Services.AddRagPipelinePersistence(builder.Configuration);
 
             // OpenAPI document generation (build-time / test-time only; not served at runtime)
             builder.Services.AddRagPipelineOpenApi();
