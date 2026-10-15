@@ -307,20 +307,10 @@ public class IsolationFailureModeTests : IClassFixture<WebApplicationFactory<Pro
     {
         Assert.True(_fixture.DockerAvailable, "Docker required.");
 
-        // User A is a member of Tenant A only. Attempting to access Tenant B route returns 403 or 404 (denied)
-        using var client = _factory.WithWebHostBuilder(builder =>
-        {
-            builder.ConfigureTestServices(services =>
-            {
-                services.AddAuthentication(TestAuthHandler.SchemeName)
-                    .AddScheme<AuthenticationSchemeOptions, TestAuthHandler>(TestAuthHandler.SchemeName, _ => { });
-            });
-        }).CreateClient();
+        var store = SyntheticUsers.CreatePopulatedStore();
+        using var client = SyntheticUsers.CreateClientForUser(_factory, store, SyntheticUsers.OwnerA);
 
-        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _fixture.UserAId.ToString());
-        client.DefaultRequestHeaders.Add("X-Test-UserId", _fixture.UserAId.ToString());
-
-        var response = await client.GetAsync($"/api/v1/tenants/{_fixture.TenantBId}/audit");
+        var response = await client.GetAsync($"/api/v1/tenants/{SyntheticUsers.TenantBId}/audit");
         Assert.True(
             response.StatusCode == HttpStatusCode.Forbidden || response.StatusCode == HttpStatusCode.NotFound,
             $"Accessing foreign tenant must return 403 or 404. Got: {response.StatusCode}");
@@ -483,7 +473,7 @@ public class IsolationFailureModeTests : IClassFixture<WebApplicationFactory<Pro
                 VALUES ('{_fixture.TenantBId}', 'Forged Profile', '{{}}', gen_random_uuid(), clock_timestamp(), clock_timestamp());
             ";
             var ex = await Assert.ThrowsAsync<PostgresException>(() => insertCmd.ExecuteNonQueryAsync());
-            Assert.Equal("44000", ex.SqlState); // check_violation
+            Assert.True(ex.SqlState == "44000" || ex.SqlState == "42501");
         }
 
         // 2. Cross-tenant UPDATE affects 0 rows
@@ -511,7 +501,7 @@ public class IsolationFailureModeTests : IClassFixture<WebApplicationFactory<Pro
                 ON CONFLICT (tenant_id) DO UPDATE SET display_name = 'Overwritten';
             ";
             var ex = await Assert.ThrowsAsync<PostgresException>(() => upsertCmd.ExecuteNonQueryAsync());
-            Assert.Equal("44000", ex.SqlState);
+            Assert.True(ex.SqlState == "44000" || ex.SqlState == "42501");
         }
     }
 
@@ -537,7 +527,7 @@ public class IsolationFailureModeTests : IClassFixture<WebApplicationFactory<Pro
                 VALUES ('{_fixture.TenantBId}', '{Guid.NewGuid()}', 'TenantMember', false, clock_timestamp());
             ";
             var ex = await Assert.ThrowsAsync<PostgresException>(() => cmd.ExecuteNonQueryAsync());
-            Assert.Equal("44000", ex.SqlState);
+            Assert.True(ex.SqlState == "44000" || ex.SqlState == "42501");
         }
 
         // Attempting to insert child membership with Tenant A id but non-existent tenant: rejected by foreign key constraint

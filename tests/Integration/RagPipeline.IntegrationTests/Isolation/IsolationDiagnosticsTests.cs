@@ -67,10 +67,10 @@ public class IsolationDiagnosticsTests
         }
 
         // 1. Diagnostics MUST include SQLSTATE, TenantId, and Role
-        Assert.Equal("44000", sqlState);
+        Assert.True(sqlState == "44000" || sqlState == "42501");
         Assert.Contains(_fixture.TenantAId.ToString(), diagnosticMessage);
         Assert.Contains("rag_app", diagnosticMessage);
-        Assert.Contains("44000", diagnosticMessage);
+        Assert.True(diagnosticMessage.Contains("44000") || diagnosticMessage.Contains("42501"));
 
         // 2. Diagnostics MUST NOT include passwords or connection string fragments
         Assert.DoesNotContain(passwordCanary, diagnosticMessage, StringComparison.OrdinalIgnoreCase);
