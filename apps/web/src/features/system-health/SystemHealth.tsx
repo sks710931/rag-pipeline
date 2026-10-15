@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
+import { CheckCircle2 } from 'lucide-react';
+import { Button, StatusMessage } from '../../shared/ui';
 
 export type HealthState =
   | { type: 'loading' }
@@ -54,11 +56,11 @@ export function SystemHealth() {
     return (
       <section
         aria-labelledby="system-health-heading"
-        className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
+        className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm"
       >
         <h2
           id="system-health-heading"
-          className="text-lg font-semibold text-slate-900"
+          className="text-lg font-semibold text-neutral-900"
         >
           System Health
         </h2>
@@ -66,10 +68,10 @@ export function SystemHealth() {
           role="status"
           aria-busy="true"
           aria-live="polite"
-          className="mt-4 flex items-center space-x-3 text-slate-600"
+          className="mt-4 flex items-center space-x-3 text-neutral-600"
         >
           <div
-            className="h-5 w-5 animate-spin rounded-full border-2 border-blue-600 border-t-transparent"
+            className="h-5 w-5 animate-spin rounded-full border-2 border-brand-600 border-t-transparent"
             aria-hidden="true"
           />
           <span className="text-sm">Checking backend liveness...</span>
@@ -82,37 +84,30 @@ export function SystemHealth() {
     return (
       <section
         aria-labelledby="system-health-heading"
-        className="rounded-lg border border-red-200 bg-white p-6 shadow-sm"
+        className="rounded-lg border border-error-200 bg-white p-6 shadow-sm"
       >
         <h2
           id="system-health-heading"
-          className="text-lg font-semibold text-slate-900"
+          className="text-lg font-semibold text-neutral-900"
         >
           System Health
         </h2>
-        <div
-          role="alert"
-          className="mt-4 rounded-md border border-red-200 bg-red-50 p-4 text-red-900"
-        >
-          <div className="flex items-start">
-            <span
-              className="mr-2 inline-block h-2 w-2 translate-y-1.5 rounded-full bg-red-600"
-              aria-hidden="true"
-            />
-            <div>
-              <p className="text-sm font-medium">System Unreachable</p>
-              <p className="mt-1 text-sm text-red-700">{state.message}</p>
-            </div>
-          </div>
-          <div className="mt-4">
-            <button
-              type="button"
-              onClick={() => void fetchHealth()}
-              className="inline-flex items-center rounded-md bg-red-600 px-3 py-1.5 text-sm font-semibold text-white shadow-sm hover:bg-red-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-600"
-            >
-              Retry
-            </button>
-          </div>
+        <div className="mt-4">
+          <StatusMessage
+            severity="error"
+            title="System Unreachable"
+            action={
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => void fetchHealth()}
+              >
+                Retry
+              </Button>
+            }
+          >
+            <p className="mt-1 text-sm text-error-700">{state.message}</p>
+          </StatusMessage>
         </div>
       </section>
     );
@@ -121,26 +116,26 @@ export function SystemHealth() {
   return (
     <section
       aria-labelledby="system-health-heading"
-      className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
+      className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm"
     >
       <h2
         id="system-health-heading"
-        className="text-lg font-semibold text-slate-900"
+        className="text-lg font-semibold text-neutral-900"
       >
         System Health
       </h2>
-      <div className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 p-4 text-emerald-900">
+      <div className="mt-4 rounded-md border border-success-200 bg-success-50 p-4 text-success-900">
         <div className="flex items-center space-x-2">
-          <span
-            className="inline-block h-2.5 w-2.5 rounded-full bg-emerald-600"
+          <CheckCircle2
+            className="h-4 w-4 shrink-0 text-success-600"
             aria-hidden="true"
           />
           <span className="text-sm font-medium">Backend status:</span>
-          <span className="text-sm font-bold capitalize text-emerald-800">
+          <span className="text-sm font-bold capitalize text-success-800">
             {state.liveStatus}
           </span>
         </div>
-        <p className="mt-2 text-xs text-emerald-700">
+        <p className="mt-2 text-xs text-success-700">
           Backend process is responsive and reporting live state directly from
           /api/v1/system/health/live.
         </p>
