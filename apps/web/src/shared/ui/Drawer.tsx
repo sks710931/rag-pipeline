@@ -3,6 +3,7 @@ import { X } from 'lucide-react';
 import { cn } from './utils';
 
 export interface DrawerProps {
+  id?: string;
   isOpen: boolean;
   onClose: () => void;
   title: string;
@@ -27,6 +28,7 @@ const FOCUSABLE_SELECTOR =
   'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function Drawer({
+  id,
   isOpen,
   onClose,
   title,
@@ -150,6 +152,7 @@ export function Drawer({
 
   return (
     <div
+      id={id}
       className="fixed inset-0 z-50 overflow-hidden"
       data-testid="drawer-backdrop"
       onClick={(e) => {

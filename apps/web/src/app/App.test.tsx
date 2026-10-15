@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { axe } from 'vitest-axe';
@@ -81,10 +81,14 @@ describe('Public Route Shell and Maintenance UX', () => {
       const nav = screen.getByRole('navigation', { name: /main navigation/i });
       expect(nav).toBeInTheDocument();
       expect(
-        screen.getByRole('link', { name: /sign in/i })
+        within(nav).getByRole('link', { name: /sign in/i })
       ).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /setup/i })).toBeInTheDocument();
-      expect(screen.getByRole('link', { name: /status/i })).toBeInTheDocument();
+      expect(
+        within(nav).getByRole('link', { name: /setup/i })
+      ).toBeInTheDocument();
+      expect(
+        within(nav).getByRole('link', { name: /status/i })
+      ).toBeInTheDocument();
 
       await waitFor(() => {
         expect(
