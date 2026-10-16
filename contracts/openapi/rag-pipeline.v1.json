@@ -438,6 +438,37 @@
           }
         }
       }
+    },
+    "/api/v1/bootstrap/status": {
+      "get": {
+        "tags": [
+          "Bootstrap"
+        ],
+        "summary": "Get deployment bootstrap status",
+        "operationId": "GetBootstrapStatus",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BootstrapStatusResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service Unavailable",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -509,6 +540,17 @@
               "null",
               "string"
             ]
+          }
+        }
+      },
+      "BootstrapStatusResponse": {
+        "required": [
+          "state"
+        ],
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string"
           }
         }
       },
@@ -733,6 +775,9 @@
     },
     {
       "name": "DeploymentAdmin"
+    },
+    {
+      "name": "Bootstrap"
     }
   ]
 }

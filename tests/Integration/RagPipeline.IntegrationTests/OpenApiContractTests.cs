@@ -105,6 +105,30 @@ public class OpenApiContractTests : IClassFixture<WebApplicationFactory<Program>
     }
 
     [Fact]
+    public async Task BootstrapStatusEndpoint_ExistsInOpenApiDocument()
+    {
+        var document = await GetV1DocumentAsync();
+
+        Assert.NotNull(document.Paths);
+        Assert.True(document.Paths.ContainsKey("/api/v1/bootstrap/status"),
+            "OpenAPI specification missing path '/api/v1/bootstrap/status'");
+
+        var json = SerializeOpenApiDocument(document);
+        using var jsonDoc = JsonDocument.Parse(json);
+        var paths = jsonDoc.RootElement.GetProperty("paths");
+        Assert.True(paths.TryGetProperty("/api/v1/bootstrap/status", out var statusEndpoint),
+            "Serialized JSON missing path '/api/v1/bootstrap/status'");
+
+        var getOperation = statusEndpoint.GetProperty("get");
+        var responses = getOperation.GetProperty("responses");
+
+        Assert.True(responses.TryGetProperty("200", out _),
+            "Bootstrap status endpoint GET operation missing 200 response");
+        Assert.True(responses.TryGetProperty("503", out _),
+            "Bootstrap status endpoint GET operation missing 503 response");
+    }
+
+    [Fact]
     public async Task ProblemResponses_UseProblemJson_AndSchemaHasTraceId()
     {
         var document = await GetV1DocumentAsync();

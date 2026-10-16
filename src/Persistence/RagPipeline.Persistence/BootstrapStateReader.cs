@@ -3,6 +3,7 @@ namespace RagPipeline.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using RagPipeline.BuildingBlocks.Persistence;
+using RagPipeline.Persistence.Bootstrap;
 using RagPipeline.Persistence.Entities;
 
 public class BootstrapStateReader : IBootstrapStateReader
@@ -44,29 +45,11 @@ public class BootstrapStateReader : IBootstrapStateReader
                 return BootstrapStateResult.Unavailable("BOOTSTRAP_STATE_MISSING");
             }
 
-            if (string.Equals(state.Status, "UNINITIALIZED", StringComparison.OrdinalIgnoreCase))
-            {
-                return BootstrapStateResult.Uninitialized();
-            }
-
-            if (string.Equals(state.Status, "SEALED", StringComparison.OrdinalIgnoreCase))
-            {
-                return BootstrapStateResult.Sealed();
-            }
-
-            return BootstrapStateResult.Unavailable($"BOOTSTRAP_STATE_{state.Status.ToUpperInvariant()}");
+            return BootstrapStatusMapper.MapStatus(state.Status);
         }
-        catch (PostgresException ex) when (ex.SqlState == "42501")
+        catch (Exception ex)
         {
-            return BootstrapStateResult.Unavailable("PERMISSION_DENIED");
-        }
-        catch (PostgresException ex) when (ex.SqlState == "42P01")
-        {
-            return BootstrapStateResult.Unavailable("DATABASE_NOT_MIGRATED");
-        }
-        catch (Exception)
-        {
-            return BootstrapStateResult.Unavailable("DATABASE_UNAVAILABLE");
+            return BootstrapStatusMapper.MapDbException(ex);
         }
     }
 }
