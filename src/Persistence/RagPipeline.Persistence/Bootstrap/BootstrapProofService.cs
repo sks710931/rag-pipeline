@@ -34,7 +34,9 @@ public sealed class BootstrapProofService : IBootstrapProofService
         _dbContext = dbContext;
         _stateReader = stateReader;
         _verifier = verifier ?? new BootstrapProofVerifier();
-        _auditEventStore = auditEventStore;
+        _auditEventStore = auditEventStore ?? new RagPipeline.Persistence.Audit.EfAuditEventStore(
+            dbContext,
+            new RagPipeline.Persistence.Tenancy.EfTenantTransactionCoordinator(dbContext));
         _randomProvider = randomProvider ?? new DefaultRandomNumberProvider();
         _timeProvider = timeProvider ?? TimeProvider.System;
         _logger = logger ?? NullLogger<BootstrapProofService>.Instance;

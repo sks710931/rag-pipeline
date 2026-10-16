@@ -184,7 +184,9 @@ public class BootstrapProofSecurityTests : IClassFixture<WebApplicationFactory<P
 
         await using var context = _fixture.CreateSuperuserDbContext();
         var stateReader = new BootstrapStateReader(context);
-        var proofService = new BootstrapProofService(context, stateReader);
+        var coordinator = new RagPipeline.Persistence.Tenancy.EfTenantTransactionCoordinator(context);
+        var auditStore = new RagPipeline.Persistence.Audit.EfAuditEventStore(context, coordinator);
+        var proofService = new BootstrapProofService(context, stateReader, auditEventStore: auditStore);
 
         // Submit invalid proof candidate
         var result = await proofService.VerifyAndConsumeProofAsync(canaryProof, "127.0.0.1");
@@ -217,7 +219,9 @@ public class BootstrapProofSecurityTests : IClassFixture<WebApplicationFactory<P
 
         await using var context = _fixture.CreateSuperuserDbContext();
         var stateReader = new BootstrapStateReader(context);
-        var proofService = new BootstrapProofService(context, stateReader);
+        var coordinator = new RagPipeline.Persistence.Tenancy.EfTenantTransactionCoordinator(context);
+        var auditStore = new RagPipeline.Persistence.Audit.EfAuditEventStore(context, coordinator);
+        var proofService = new BootstrapProofService(context, stateReader, auditEventStore: auditStore);
 
         await proofService.VerifyAndConsumeProofAsync(dummyProof, "10.0.0.1");
 
