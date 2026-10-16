@@ -9,12 +9,34 @@ using RagPipeline.BuildingBlocks.Tenancy;
 using RagPipeline.DeploymentCapabilities;
 using RagPipeline.IdentityAccess;
 using RagPipeline.Persistence;
+using RagPipeline.Persistence.Cli;
 using RagPipeline.TenantManagement;
 
 public partial class Program
 {
     public static int Main(string[] args)
     {
+        if (args.Length > 0 && (string.Equals(args[0], "rag-admin", StringComparison.OrdinalIgnoreCase) || string.Equals(args[0], "bootstrap-proof", StringComparison.OrdinalIgnoreCase)))
+        {
+            var configBuilder = new ConfigurationBuilder()
+                .AddJsonFile("appsettings.json", optional: true)
+                .AddJsonFile($"appsettings.{Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT") ?? "Production"}.json", optional: true)
+                .AddEnvironmentVariables();
+
+            var secretsPath = Environment.GetEnvironmentVariable("RAGPIPELINE_SECRETS_DIR");
+            if (string.IsNullOrWhiteSpace(secretsPath))
+            {
+                secretsPath = "/run/secrets";
+            }
+            if (Directory.Exists(secretsPath))
+            {
+                configBuilder.AddKeyPerFile(directoryPath: secretsPath, optional: true, reloadOnChange: false);
+            }
+
+            var configuration = configBuilder.Build();
+            return RagAdminCli.RunAsync(args, configuration).GetAwaiter().GetResult();
+        }
+
         try
         {
             var builder = WebApplication.CreateBuilder(args);
