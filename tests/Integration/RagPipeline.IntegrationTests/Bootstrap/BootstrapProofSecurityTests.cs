@@ -193,7 +193,7 @@ public class BootstrapProofSecurityTests : IClassFixture<WebApplicationFactory<P
         Assert.False(result.IsSuccess);
 
         // Query audit events in database to ensure candidate proof was NOT logged into details_json or anywhere
-        await using var conn = new NpgsqlConnection(_fixture.MigratorConnectionString);
+        await using var conn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT action, outcome, details_json FROM audit_events WHERE action LIKE 'BootstrapProof%';";
@@ -225,7 +225,7 @@ public class BootstrapProofSecurityTests : IClassFixture<WebApplicationFactory<P
 
         await proofService.VerifyAndConsumeProofAsync(dummyProof, "10.0.0.1");
 
-        await using var conn = new NpgsqlConnection(_fixture.MigratorConnectionString);
+        await using var conn = new NpgsqlConnection(_fixture.SuperuserConnectionString);
         await conn.OpenAsync();
         await using var cmd = conn.CreateCommand();
         cmd.CommandText = "SELECT action, outcome, details_json FROM audit_events WHERE action = 'BootstrapProof.Verify' ORDER BY occurred_at DESC LIMIT 1;";
