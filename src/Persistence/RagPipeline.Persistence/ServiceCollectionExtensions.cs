@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using RagPipeline.BuildingBlocks.Authorization;
+using RagPipeline.BuildingBlocks.Bootstrap;
 using RagPipeline.BuildingBlocks.Configuration;
 using RagPipeline.BuildingBlocks.Persistence;
 using RagPipeline.BuildingBlocks.Tenancy;
@@ -46,6 +47,11 @@ public static class ServiceCollectionExtensions
 
             services.AddScoped<IBootstrapStateReader, BootstrapStateReader>();
             services.AddScoped<IBootstrapStateService, BootstrapStateService>();
+            services.AddSingleton<IRandomNumberProvider, DefaultRandomNumberProvider>();
+            services.AddSingleton<IConstantTimeComparator, DefaultConstantTimeComparator>();
+            services.AddSingleton<IProofAttemptLimiter, ProofAttemptLimiter>();
+            services.AddScoped<IBootstrapProofVerifier, BootstrapProofVerifier>();
+            services.AddScoped<IBootstrapProofService, RagPipeline.Persistence.Bootstrap.BootstrapProofService>();
             services.AddScoped<IDeploymentOwnerLookup, EfDeploymentOwnerLookup>();
             services.AddScoped<ITenantMembershipLookup, EfTenantMembershipLookup>();
             services.AddScoped<ITenantProfileStore, EfTenantProfileStore>();
